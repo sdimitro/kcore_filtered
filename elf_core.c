@@ -22,7 +22,6 @@
 #include <linux/uio.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
-#include <linux/init.h>
 #include <asm/io.h>
 #include <asm/page.h>
 
@@ -239,7 +238,7 @@ int kcf_elf_write_notes(struct iov_iter *iter, loff_t *fpos, size_t *buflen,
 	char *notes;
 	size_t i = 0;
 	size_t tsz;
-	unsigned char vmcoreinfo_buf[PAGE_SIZE];
+	unsigned char *vmcoreinfo_buf;
 	size_t vmcoreinfo_actual_size = 0;
 
 	if (!*buflen || *fpos >= layout->notes_offset + layout->notes_len)
@@ -248,17 +247,24 @@ int kcf_elf_write_notes(struct iov_iter *iter, loff_t *fpos, size_t *buflen,
 	if (*fpos < layout->notes_offset)
 		return 0;
 
-	notes = kzalloc(layout->notes_len, GFP_KERNEL);
-	if (!notes)
+	vmcoreinfo_buf = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!vmcoreinfo_buf)
 		return -ENOMEM;
+
+	notes = kzalloc(layout->notes_len, GFP_KERNEL);
+	if (!notes) {
+		kfree(vmcoreinfo_buf);
+		return -ENOMEM;
+	}
 
 	/* NT_PRSTATUS */
 	append_note(notes, &i, CORE_STR, NT_PRSTATUS,
 		    &prstatus, sizeof(prstatus));
 
-	/* NT_PRPSINFO with boot command line */
-	strscpy(prpsinfo.pr_psargs, boot_command_line,
-		sizeof(prpsinfo.pr_psargs));
+	/*
+	 * NT_PRPSINFO - boot_command_line is not exported to modules,
+	 * so we leave pr_psargs empty. drgn does not use this field.
+	 */
 	append_note(notes, &i, CORE_STR, NT_PRPSINFO,
 		    &prpsinfo, sizeof(prpsinfo));
 
@@ -277,7 +283,6 @@ int kcf_elf_write_notes(struct iov_iter *iter, loff_t *fpos, size_t *buflen,
 	 * Fallback: if we can't read it, emit an empty vmcoreinfo note.
 	 * drgn can still fall back to /sys/kernel/vmcoreinfo.
 	 */
-	memset(vmcoreinfo_buf, 0, sizeof(vmcoreinfo_buf));
 	if (paddr_vmcoreinfo_note()) {
 		void *note_va;
 		struct elf_note *vmci_note;
@@ -299,8 +304,7 @@ int kcf_elf_write_notes(struct iov_iter *iter, loff_t *fpos, size_t *buflen,
 				 * Read just the data portion into our
 				 * buffer for re-wrapping.
 				 */
-				memset(vmcoreinfo_buf, 0,
-				       sizeof(vmcoreinfo_buf));
+				memset(vmcoreinfo_buf, 0, PAGE_SIZE);
 				copy_from_kernel_nofault(
 					vmcoreinfo_buf,
 					(char *)note_va + hdr_size,
@@ -318,9 +322,11 @@ int kcf_elf_write_notes(struct iov_iter *iter, loff_t *fpos, size_t *buflen,
 	if (copy_to_iter(notes + *fpos - layout->notes_offset,
 			 tsz, iter) != tsz) {
 		kfree(notes);
+		kfree(vmcoreinfo_buf);
 		return -EFAULT;
 	}
 	kfree(notes);
+	kfree(vmcoreinfo_buf);
 
 	*buflen -= tsz;
 	*fpos += tsz;

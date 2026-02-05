@@ -136,7 +136,7 @@ cost of losing visibility into kernel slab objects.
 
 ## The Sub-Page Problem
 
-A colleague (Omar) raised an important limitation: page-level filtering
+There is an important limitation here! Page-level filtering
 cannot catch user data that lives *within* kernel pages. For example:
 
 - `copy_from_user()` data stored in slab objects
@@ -144,8 +144,8 @@ cannot catch user data that lives *within* kernel pages. For example:
 - Network packet payloads in `sk_buff` slab caches
 - Filesystem buffers with user file content
 
-This is fundamentally correct. A single slab page may contain dozens of
-`kmalloc` allocations, some holding user data and some holding kernel
+Fundamentally, a single slab page may contain dozens of `kmalloc`
+allocations, some holding user data and some holding kernel
 metadata. There is no page flag that distinguishes these.
 
 ### Our Position

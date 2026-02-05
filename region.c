@@ -14,9 +14,9 @@
 #include <linux/ioport.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
+#include <linux/sizes.h>
 #include <linux/vmalloc.h>
 #include <asm/io.h>
-#include <asm/sections.h>
 
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 #include <asm/pgtable.h>
@@ -63,20 +63,44 @@ static int add_ram_region(struct resource *res, void *arg)
 
 /*
  * Add the kernel text region.
- * On architectures that define CONFIG_ARCH_PROC_KCORE_TEXT, kernel
- * text lives in a special region separate from the direct map.
+ *
+ * The linker symbols _text and _end are not exported to modules, so
+ * we cannot reference them directly. On arm64, kimage_voffset is
+ * exported and KIMAGE_VADDR is a header macro, so we can compute
+ * the kernel image base address. We use a conservative estimate for
+ * the kernel image size (256 MB) which is large enough to cover any
+ * realistic kernel image.
+ *
+ * On other architectures where KIMAGE_VADDR is not defined, we skip
+ * the text region — the kernel text physical pages are still accessible
+ * through the RAM regions in the direct map.
  */
+#define KCF_KERNEL_IMAGE_SIZE_MAX	SZ_256M
+
+#if defined(CONFIG_ARCH_PROC_KCORE_TEXT) && defined(KIMAGE_VADDR)
+extern u64 kimage_voffset;
+#endif
+
 static int add_text_region(struct list_head *head)
 {
-#ifdef CONFIG_ARCH_PROC_KCORE_TEXT
+#if defined(CONFIG_ARCH_PROC_KCORE_TEXT) && defined(KIMAGE_VADDR)
 	struct kcf_region *ent;
+	unsigned long text_start;
+
+	/*
+	 * On arm64: kernel image VA = KIMAGE_VADDR + kaslr_offset.
+	 * kimage_voffset = VA - PA of kernel image, and
+	 * KIMAGE_VADDR is the base before KASLR.
+	 * We include the full KIMAGE range up to a safe upper bound.
+	 */
+	text_start = KIMAGE_VADDR;
 
 	ent = kmalloc(sizeof(*ent), GFP_KERNEL);
 	if (!ent)
 		return -ENOMEM;
 
-	ent->addr = (unsigned long)_text;
-	ent->size = (unsigned long)_end - (unsigned long)_text;
+	ent->addr = text_start;
+	ent->size = KCF_KERNEL_IMAGE_SIZE_MAX;
 	ent->type = KCF_REGION_TEXT;
 	list_add_tail(&ent->list, head);
 #endif

@@ -20,17 +20,17 @@ SKIP=0
 
 pass() {
     echo "  PASS: $1"
-    ((PASS++))
+    PASS=$((PASS + 1))
 }
 
 fail() {
     echo "  FAIL: $1"
-    ((FAIL++))
+    FAIL=$((FAIL + 1))
 }
 
 skip() {
     echo "  SKIP: $1"
-    ((SKIP++))
+    SKIP=$((SKIP + 1))
 }
 
 # Header

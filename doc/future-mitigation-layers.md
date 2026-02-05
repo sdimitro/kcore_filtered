@@ -171,7 +171,7 @@ would then check this taint before serving data.
 
 ### Value
 
-Addresses Omar's sub-page problem completely, but at significant
+Addresses the sub-page problem completely, but at significant
 complexity and performance cost. Likely only viable as an upstream
 feature with careful design.
 
@@ -190,7 +190,7 @@ Each layer independently reduces risk. Layers 0-3 are achievable as
 an external module. Layer 4 requires drgn changes. Layer 5 requires
 kernel patches.
 
-The recommended deployment path:
+The deployment path:
 1. Start with Layer 0 (this module) — immediate value
 2. Add Layer 2 (audit logging) — low effort, high compliance value
 3. Add Layer 3 (rate limiting) — low effort, reduces blast radius

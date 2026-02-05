@@ -41,7 +41,7 @@ bool kcf_filter_free = true;
 module_param_named(filter_free, kcf_filter_free, bool, 0644);
 MODULE_PARM_DESC(filter_free, "Filter free buddy pages (default: Y)");
 
-bool kcf_filter_slab = false;
+bool kcf_filter_slab;
 module_param_named(filter_slab, kcf_filter_slab, bool, 0644);
 MODULE_PARM_DESC(filter_slab, "Filter slab pages (default: N)");
 

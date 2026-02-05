@@ -92,7 +92,7 @@ Submitting to LKML requires:
 - Justification for the feature in the commit message
 - Review by fs/proc maintainers and mm maintainers
 - Potentially contentious discussion about the "false sense of security"
-  concern (Omar's sub-page problem)
+  concern (see sub-page problem in design doc)
 - Multiple revision cycles (typical: 3-5 revisions over weeks/months)
 - Maintenance burden accepted by the subsystem maintainer
 
@@ -194,7 +194,7 @@ logic from the procfs entry management:
 This is the cleanest architecture but the largest patch, making
 upstream acceptance harder.
 
-## Recommendation
+## Happy Case
 
 **Short term (now):** Continue with the external module. It provides
 immediate value, iterates fast, and can be deployed on existing systems.

@@ -18,6 +18,7 @@
 
 #include <linux/module.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
@@ -313,7 +314,7 @@ static int __init kcf_init(void)
 					       &elf_layout);
 
 	/* Create /proc/kcore_filtered (root read-only, like /proc/kcore) */
-	proc_entry = proc_create("kcore_filtered", S_IRUSR, NULL,
+	proc_entry = proc_create("kcore_filtered", 0400, NULL,
 				 &kcf_proc_ops);
 	if (!proc_entry) {
 		pr_err("failed to create /proc/kcore_filtered\n");
