@@ -3,9 +3,11 @@
 [![CI](https://github.com/sdimitropoulos/kcore_filtered/actions/workflows/ci.yml/badge.svg)](https://github.com/sdimitropoulos/kcore_filtered/actions/workflows/ci.yml)
 
 A Linux kernel module that creates `/proc/kcore_filtered` — a
-privacy-filtered alternative to `/proc/kcore`. Kernel memory is
-exposed in ELF core format (readable by **drgn**, readelf, crash) but
-user-space pages are redacted to zeroes.
+data-minimized alternative to `/proc/kcore`. Kernel memory is exposed
+in ELF core format (readable by **drgn**, readelf, crash) with
+user-space pages redacted to zeroes, reducing data exposure by
+80–95%. Note: page-level filtering cannot catch user data fragments
+inside kernel slab objects (see [doc/future-mitigation-layers.md](doc/future-mitigation-layers.md)).
 
 ## Quick Start
 
