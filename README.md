@@ -1,6 +1,6 @@
 # kcore_filtered
 
-[![CI](https://github.com/sdimitropoulos/kcore_filtered/actions/workflows/ci.yml/badge.svg)](https://github.com/sdimitropoulos/kcore_filtered/actions/workflows/ci.yml)
+[![CI](https://github.com/sdimitro/kcore_filtered/actions/workflows/ci.yml/badge.svg)](https://github.com/sdimitro/kcore_filtered/actions/workflows/ci.yml)
 
 A Linux kernel module that creates `/proc/kcore_filtered` — a
 data-minimized alternative to `/proc/kcore`. Kernel memory is exposed
