@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * kcore_filtered_main.c - Privacy-filtered /proc/kcore alternative
+ * Privacy-filtered /proc/kcore alternative
  *
  * Creates /proc/kcore_filtered, an ELF core file interface identical
  * in format to /proc/kcore but with page-level privacy filtering.

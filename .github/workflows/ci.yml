@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: GPL-2.0-only
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    name: Build & Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-headers-$(uname -r) sparse
+
+      - name: Compile module
+        run: make
+
+      - name: Run checkpatch.pl
+        run: make checkpatch
+
+      - name: Run sparse static analysis
+        run: make sparse
+
+  test:
+    name: Module Tests
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-headers-$(uname -r) python3
+
+      - name: Build module
+        run: make
+
+      - name: Load module
+        run: sudo insmod kcore_filtered.ko
+
+      - name: Run basic tests
+        run: sudo bash tests/test_basic.sh
+
+      - name: Run filter validation
+        run: sudo python3 tests/test_filter.py
+
+      - name: Unload module
+        if: always()
+        run: sudo rmmod kcore_filtered 2>/dev/null || true

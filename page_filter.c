@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * page_filter.c - Page classification and privacy filtering
+ * Page classification and privacy filtering
  *
  * Core privacy logic for kcore_filtered. For each physical page in a
  * KCORE_RAM region, determines whether the page contains kernel data

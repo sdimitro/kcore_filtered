@@ -18,8 +18,8 @@ $(MODULE_NAME)-objs := kcore_filtered_main.o page_filter.o elf_core.o region.o
 # Kernel build directory - override with KDIR=/path/to/6.8+-tree
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
-# Source files for linting
-SRCS := $(wildcard *.c *.h)
+# Source files for linting (exclude auto-generated .mod.c)
+SRCS := $(filter-out %.mod.c,$(wildcard *.c *.h))
 
 # Checkpatch script location
 CHECKPATCH := $(KDIR)/scripts/checkpatch.pl

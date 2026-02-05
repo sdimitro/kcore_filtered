@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * page_filter.h - Page classification and privacy filtering for kcore_filtered
+ * Page classification and privacy filtering for kcore_filtered
  *
  * Provides a per-page predicate that determines whether a given physical
  * page should be exposed (kernel data) or redacted (user/sensitive data).

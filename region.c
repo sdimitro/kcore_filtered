@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * region.c - Memory region discovery for kcore_filtered
+ * Memory region discovery for kcore_filtered
  *
  * Discovers system RAM ranges, kernel text, vmalloc, and vmemmap
  * regions using exported kernel APIs. This replaces the internal

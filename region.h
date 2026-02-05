@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * region.h - Memory region discovery and management for kcore_filtered
+ * Memory region discovery and management for kcore_filtered
  *
  * Builds a list of kernel virtual address regions (text, vmalloc, RAM,
  * vmemmap) that mirrors what /proc/kcore exposes, but constructed

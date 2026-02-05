@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * elf_core.c - ELF core file header generation for kcore_filtered
+ * ELF core file header generation for kcore_filtered
  *
  * Generates the ELF file header, program headers (one PT_NOTE plus
  * one PT_LOAD per region), and note segment for /proc/kcore_filtered.
