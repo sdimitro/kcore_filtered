@@ -58,9 +58,11 @@ struct kcf_filter_stats kcf_stats;
  */
 static bool is_user_cache_page(struct page *page)
 {
+	struct folio *folio;
 	struct address_space *mapping;
 
-	mapping = page_mapping(page);
+	folio = page_folio(page);
+	mapping = folio_mapping(folio);
 	if (!mapping)
 		return false;
 
@@ -80,7 +82,7 @@ static bool is_user_cache_page(struct page *page)
 	 * For the initial implementation, we filter all file-backed
 	 * page cache that's on the LRU (actively cached user file data).
 	 */
-	if (PageLRU(page))
+	if (folio_test_lru(folio))
 		return true;
 
 	return false;
