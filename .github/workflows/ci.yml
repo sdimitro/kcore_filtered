@@ -64,6 +64,9 @@ jobs:
       - name: Run basic tests
         run: sudo bash tests/test_basic.sh
 
+      - name: Reload module for filter tests
+        run: sudo insmod kcore_filtered.ko
+
       - name: Run filter validation
         run: sudo python3 tests/test_filter.py
 
