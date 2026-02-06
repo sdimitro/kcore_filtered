@@ -8,18 +8,34 @@ on:
 
 jobs:
   build:
-    name: Build & Lint
+    name: Build (kernel ${{ matrix.kernel }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ["6.8", "6.11", "6.12", "6.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch kernel ${{ matrix.kernel }} headers
+        run: |
+          KDIR=$(bash .github/scripts/fetch-kernel-headers.sh \
+                   "${{ matrix.kernel }}" "/tmp/kernel-${{ matrix.kernel }}")
+          echo "KDIR=${KDIR}" >> "$GITHUB_ENV"
+
+      - name: Compile module
+        run: make KDIR="${KDIR}"
+
+  lint:
+    name: Lint & Static Analysis
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y linux-headers-$(uname -r) sparse
-
-      - name: Compile module
-        run: make
 
       - name: Run checkpatch.pl
         run: make checkpatch
@@ -30,7 +46,7 @@ jobs:
   test:
     name: Module Tests
     runs-on: ubuntu-24.04
-    needs: build
+    needs: [build, lint]
     steps:
       - uses: actions/checkout@v4
 
