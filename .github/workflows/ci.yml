@@ -73,3 +73,40 @@ jobs:
       - name: Unload module
         if: always()
         run: sudo rmmod kcore_filtered 2>/dev/null || true
+
+  vm-test:
+    name: VM Test (kernel ${{ matrix.kernel }})
+    runs-on: ubuntu-24.04
+    needs: [build, lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ["6.8", "6.11", "6.12", "6.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 python3-pip
+          sudo pip3 install --break-system-packages virtme-ng
+
+      - name: Fetch kernel ${{ matrix.kernel }} headers
+        run: |
+          KDIR=$(bash .github/scripts/fetch-kernel-headers.sh \
+                   "${{ matrix.kernel }}" "/tmp/kernel-${{ matrix.kernel }}")
+          echo "KDIR=${KDIR}" >> "$GITHUB_ENV"
+
+      - name: Build module
+        run: make KDIR="${KDIR}"
+
+      - name: Run tests in VM
+        timeout-minutes: 10
+        run: sudo bash .github/scripts/run-vm-tests.sh "${{ matrix.kernel }}" .
