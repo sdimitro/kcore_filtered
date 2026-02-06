@@ -16,7 +16,12 @@
 
 #include <linux/elf.h>
 #include <linux/elfcore.h>
-#include <linux/crash_core.h>
+/*
+ * paddr_vmcoreinfo_note() is exported by the kernel. The declaration
+ * moved from crash_core.h to vmcore_info.h in 6.10, so we declare it
+ * ourselves to avoid version-dependent includes.
+ */
+extern unsigned long long paddr_vmcoreinfo_note(void);
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
@@ -29,6 +34,12 @@
 #include "region.h"
 
 #define CORE_STR "CORE"
+
+/*
+ * Matches the kernel's VMCOREINFO_NOTE_NAME. Defined here because
+ * the declaration moved from crash_core.h to vmcore_info.h in 6.10.
+ */
+#define KCF_VMCOREINFO_NOTE_NAME "VMCOREINFO"
 
 #ifndef ELF_CORE_EFLAGS
 #define ELF_CORE_EFLAGS	0
@@ -92,7 +103,7 @@ static size_t compute_notes_len(void)
 	 * but since that symbol isn't exported, we use a safe upper bound
 	 * and pad with zeroes.
 	 */
-	len += elf_note_size(VMCOREINFO_NOTE_NAME, PAGE_SIZE);
+	len += elf_note_size(KCF_VMCOREINFO_NOTE_NAME, PAGE_SIZE);
 
 	return len;
 }
@@ -313,7 +324,7 @@ int kcf_elf_write_notes(struct iov_iter *iter, loff_t *fpos, size_t *buflen,
 		}
 	}
 
-	append_note(notes, &i, VMCOREINFO_NOTE_NAME, 0,
+	append_note(notes, &i, KCF_VMCOREINFO_NOTE_NAME, 0,
 		    vmcoreinfo_buf,
 		    vmcoreinfo_actual_size ? vmcoreinfo_actual_size : 1);
 
