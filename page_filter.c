@@ -134,9 +134,11 @@ enum kcf_page_class kcf_classify_page(unsigned long pfn)
 
 	/*
 	 * Step 6: SwapBacked pages not caught by PageAnon above
-	 * (e.g., shmem pages for shared anonymous mappings)
+	 * (e.g., shmem pages for shared anonymous mappings).
+	 * PageSwapBacked() was removed in 6.12; use the folio API
+	 * which is available on all kernels we target (6.8+).
 	 */
-	if (kcf_filter_anon && PageSwapBacked(page)) {
+	if (kcf_filter_anon && folio_test_swapbacked(page_folio(page))) {
 		atomic64_inc(&kcf_stats.denied_swapbacked);
 		return KCF_PAGE_DENY;
 	}
