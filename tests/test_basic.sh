@@ -178,8 +178,54 @@ else
     fail "/proc/kcore_filtered_stats does not exist"
 fi
 
-# --- Test 9: Module unloading ---
-echo "Test 9: Module unloading"
+# --- Test 9: Audit logging ---
+echo "Test 9: Audit logging"
+# Trigger a deliberate open-read-close cycle
+dd if="$PROC_ENTRY" of=/dev/null bs=4096 count=1 2>/dev/null
+sleep 1
+# Audit records go to dmesg when auditd is not running, and to
+# /var/log/audit/audit.log when it is. Check both paths.
+AUDIT_FOUND=0
+DMESG_AUDIT=$(dmesg | tail -n +$((DMESG_START + 1)))
+if echo "$DMESG_AUDIT" | grep -q "kcore_filtered op=open"; then
+    AUDIT_FOUND=1
+fi
+if [[ -r /var/log/audit/audit.log ]]; then
+    if grep -q "kcore_filtered op=open" /var/log/audit/audit.log 2>/dev/null; then
+        AUDIT_FOUND=1
+    fi
+fi
+if [[ $AUDIT_FOUND -eq 1 ]]; then
+    pass "audit open record found"
+else
+    skip "audit records not found (auditd may not be running and klog may not include audit)"
+fi
+
+CLOSE_FOUND=0
+if echo "$DMESG_AUDIT" | grep -q "kcore_filtered op=close"; then
+    CLOSE_FOUND=1
+fi
+if [[ -r /var/log/audit/audit.log ]]; then
+    if grep -q "kcore_filtered op=close" /var/log/audit/audit.log 2>/dev/null; then
+        CLOSE_FOUND=1
+    fi
+fi
+if [[ $CLOSE_FOUND -eq 1 ]]; then
+    pass "audit close record found (includes bytes_read and duration_ms)"
+else
+    skip "audit close record not found (auditd may not be running)"
+fi
+
+# Verify audit parameter is visible in sysfs
+AUDIT_PARAM=$(cat /sys/module/kcore_filtered/parameters/audit 2>/dev/null || echo "unknown")
+if [[ "$AUDIT_PARAM" == "Y" ]]; then
+    pass "audit=Y confirmed via sysfs"
+else
+    fail "audit parameter is '$AUDIT_PARAM', expected 'Y'"
+fi
+
+# --- Test 10: Module unloading ---
+echo "Test 10: Module unloading"
 if rmmod "$MODNAME"; then
     pass "rmmod succeeded"
 else
@@ -187,8 +233,8 @@ else
 fi
 sleep 1
 
-# --- Test 10: Procfs entries removed ---
-echo "Test 10: Cleanup"
+# --- Test 11: Procfs entries removed ---
+echo "Test 11: Cleanup"
 if [[ ! -e "$PROC_ENTRY" ]]; then
     pass "/proc/kcore_filtered removed after unload"
 else
@@ -201,8 +247,8 @@ else
     fail "/proc/kcore_filtered_stats still exists after unload"
 fi
 
-# --- Test 11: Kernel log check ---
-echo "Test 11: Kernel log"
+# --- Test 12: Kernel log check ---
+echo "Test 12: Kernel log"
 DMESG_NEW=$(dmesg | tail -n +$((DMESG_START + 1)))
 if echo "$DMESG_NEW" | grep -q "${MODNAME}: initializing"; then
     pass "init message found in dmesg"
@@ -217,8 +263,8 @@ else
     pass "no error messages in dmesg"
 fi
 
-# --- Test 12: Load with filter_slab=1 ---
-echo "Test 12: Module loading with filter_slab=1"
+# --- Test 13: Load with filter_slab=1 ---
+echo "Test 13: Module loading with filter_slab=1"
 if insmod "$MODPATH" filter_slab=1; then
     pass "insmod filter_slab=1 succeeded"
 else
@@ -234,8 +280,8 @@ sleep 1
 
 if [[ -z "${goto_summary:-}" ]]; then
 
-# --- Test 13: Verify filter_slab parameter ---
-echo "Test 13: filter_slab parameter"
+# --- Test 14: Verify filter_slab parameter ---
+echo "Test 14: filter_slab parameter"
 SLAB_PARAM=$(cat /sys/module/kcore_filtered/parameters/filter_slab 2>/dev/null || echo "unknown")
 if [[ "$SLAB_PARAM" == "Y" ]]; then
     pass "filter_slab=Y confirmed via sysfs"
@@ -243,8 +289,8 @@ else
     fail "filter_slab parameter is '$SLAB_PARAM', expected 'Y'"
 fi
 
-# --- Test 14: Stats show denied_slab field ---
-echo "Test 14: denied_slab in stats"
+# --- Test 15: Stats show denied_slab field ---
+echo "Test 15: denied_slab in stats"
 if [[ -e "$STATS_ENTRY" ]]; then
     STATS_CONTENT=$(cat "$STATS_ENTRY" 2>/dev/null || echo "")
     if echo "$STATS_CONTENT" | grep -q "denied_slab"; then
@@ -256,8 +302,8 @@ else
     fail "/proc/kcore_filtered_stats does not exist"
 fi
 
-# --- Test 15: Read some data to exercise slab filtering ---
-echo "Test 15: Exercise slab filter"
+# --- Test 16: Read some data to exercise slab filtering ---
+echo "Test 16: Exercise slab filter"
 # Read a chunk from the file to trigger page classification
 READ_BYTES=$(dd if="$PROC_ENTRY" bs=4096 count=256 2>/dev/null | wc -c)
 if [[ "$READ_BYTES" -gt 0 ]]; then
@@ -273,8 +319,8 @@ else
     fail "failed to read from kcore_filtered with filter_slab=1"
 fi
 
-# --- Test 16: Unload after filter_slab test ---
-echo "Test 16: Unload after filter_slab test"
+# --- Test 17: Unload after filter_slab test ---
+echo "Test 17: Unload after filter_slab test"
 if rmmod "$MODNAME"; then
     pass "rmmod after filter_slab=1 test succeeded"
 else

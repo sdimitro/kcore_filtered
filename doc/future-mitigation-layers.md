@@ -72,20 +72,48 @@ subsystems. The allowlist must be tuned per use case.
 
 ## Layer 2: Audit Logging
 
-**Status: Planned**
+**Status: Implemented**
 
-Log every open of `/proc/kcore_filtered` to the kernel audit subsystem:
+Logs every open and close of `/proc/kcore_filtered` to the kernel audit
+subsystem using `AUDIT_KERNEL` (type 2000) records.
 
-- Who opened it (uid, pid, comm)
-- When (timestamp)
-- How long it was held open
-- How many bytes were read
-- Filter statistics at close time
+### What is logged
 
-### Implementation
+**On open:**
+- `op=open` — event type
+- `pid` — PID of the process that opened the file
+- `uid` — UID of the process
+- `comm` — process command name (e.g., `drgn`, `dd`, `cat`)
 
-Use `audit_log_start()` / `audit_log_end()` in the `open()` and
-`release()` handlers. Emit a custom audit record type.
+**On close:**
+- `op=close` — event type
+- `pid`, `uid`, `comm` — same identity fields as open
+- `bytes_read` — total bytes read during the session
+- `duration_ms` — how long the file was held open (milliseconds)
+
+### Configuration
+
+Controlled by the `audit` module parameter (default: on):
+
+```bash
+insmod kcore_filtered.ko audit=1    # default, emit audit records
+insmod kcore_filtered.ko audit=0    # disable audit logging
+echo 0 > /sys/module/kcore_filtered/parameters/audit  # runtime toggle
+```
+
+### Viewing audit records
+
+When `auditd` is running, records appear in `/var/log/audit/audit.log`:
+
+```bash
+ausearch -m UNKNOWN[2000] -i | grep kcore_filtered
+```
+
+When `auditd` is not running, records go to the kernel log (dmesg):
+
+```bash
+dmesg | grep "kcore_filtered op="
+```
 
 ### Value
 
@@ -179,9 +207,9 @@ feature with careful design.
 
 | Layer | Control | Addresses |
 |---|---|---|
-| 0 | Page-level filtering | Bulk user data (anon, cache, free) |
+| 0 | Page-level filtering (implemented) | Bulk user data (anon, cache, free) |
 | 1 | Slab allowlisting | User data in denied slab caches |
-| 2 | Audit logging | Accountability and detection |
+| 2 | Audit logging (implemented) | Accountability and detection |
 | 3 | Rate/time limits | Bulk exfiltration risk |
 | 4 | Targeted reads (BPF) | Arbitrary kernel memory access |
 | 5 | Object-level taint | User data in allowed slab objects |
@@ -191,8 +219,8 @@ an external module. Layer 4 requires drgn changes. Layer 5 requires
 kernel patches.
 
 The deployment path:
-1. Start with Layer 0 (this module) — immediate value
-2. Add Layer 2 (audit logging) — low effort, high compliance value
+1. Start with Layer 0 (this module) — immediate value (**done**)
+2. Add Layer 2 (audit logging) — low effort, high compliance value (**done**)
 3. Add Layer 3 (rate limiting) — low effort, reduces blast radius
 4. Investigate Layer 1 (slab allowlisting) — moderate effort
 5. Research Layer 4 (targeted reads) — long-term goal

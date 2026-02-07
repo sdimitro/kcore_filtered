@@ -25,6 +25,10 @@
 #include <linux/capability.h>
 #include <linux/security.h>
 #include <linux/vmalloc.h>
+#include <linux/audit.h>
+#include <linux/cred.h>
+#include <linux/ktime.h>
+#include <linux/sched.h>
 #include <asm/io.h>
 #include <asm/page.h>
 
@@ -36,6 +40,23 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("kcore_filtered contributors");
 MODULE_DESCRIPTION("Privacy-filtered /proc/kcore alternative for safe kernel introspection");
 MODULE_VERSION("0.1.0");
+
+static bool kcf_audit = true;
+module_param_named(audit, kcf_audit, bool, 0644);
+MODULE_PARM_DESC(audit, "Emit audit records on open/close (default: Y)");
+
+/*
+ * Per-file session state. Tracks the bounce buffer, who opened the
+ * file, when, and how much was read - used for audit logging on close.
+ */
+struct kcf_session {
+	char *bounce_buf;
+	ktime_t open_time;
+	size_t bytes_read;
+	pid_t pid;
+	uid_t uid;
+	char comm[TASK_COMM_LEN];
+};
 
 /* Virtual address <-> file offset conversion, matching kcore.c */
 #ifndef kc_vaddr_to_offset
@@ -62,7 +83,8 @@ static size_t elf_file_size;
 static ssize_t kcf_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
 	struct file *file = iocb->ki_filp;
-	char *bounce_buf = file->private_data;
+	struct kcf_session *sess = file->private_data;
+	char *bounce_buf = sess->bounce_buf;
 	loff_t *fpos = &iocb->ki_pos;
 	size_t buflen = iov_iter_count(iter);
 	size_t orig_buflen = buflen;
@@ -220,11 +242,55 @@ out:
 	read_unlock(&region_lock);
 	if (ret)
 		return ret;
+	sess->bytes_read += orig_buflen - buflen;
 	return orig_buflen - buflen;
+}
+
+static void kcf_audit_open(struct kcf_session *sess)
+{
+	struct audit_buffer *ab;
+
+	if (!kcf_audit)
+		return;
+
+	ab = audit_log_start(audit_context(), GFP_KERNEL, AUDIT_KERNEL);
+	if (!ab)
+		return;
+
+	audit_log_format(ab,
+		"kcore_filtered op=open pid=%d uid=%u comm=",
+		sess->pid, sess->uid);
+	audit_log_untrustedstring(ab, sess->comm);
+	audit_log_end(ab);
+}
+
+static void kcf_audit_close(struct kcf_session *sess)
+{
+	struct audit_buffer *ab;
+	s64 duration_ms;
+
+	if (!kcf_audit)
+		return;
+
+	duration_ms = ktime_ms_delta(ktime_get(), sess->open_time);
+
+	ab = audit_log_start(audit_context(), GFP_KERNEL, AUDIT_KERNEL);
+	if (!ab)
+		return;
+
+	audit_log_format(ab,
+		"kcore_filtered op=close pid=%d uid=%u comm=",
+		sess->pid, sess->uid);
+	audit_log_untrustedstring(ab, sess->comm);
+	audit_log_format(ab, " bytes_read=%zu duration_ms=%lld",
+		sess->bytes_read, duration_ms);
+	audit_log_end(ab);
 }
 
 static int kcf_open(struct inode *inode, struct file *filp)
 {
+	struct kcf_session *sess;
+
 	/*
 	 * Same permission model as /proc/kcore:
 	 * - Requires CAP_SYS_RAWIO
@@ -233,17 +299,34 @@ static int kcf_open(struct inode *inode, struct file *filp)
 	if (!capable(CAP_SYS_RAWIO))
 		return -EPERM;
 
-	/* Allocate a per-file bounce buffer for safe kernel reads */
-	filp->private_data = kmalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!filp->private_data)
+	sess = kzalloc(sizeof(*sess), GFP_KERNEL);
+	if (!sess)
 		return -ENOMEM;
 
+	sess->bounce_buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!sess->bounce_buf) {
+		kfree(sess);
+		return -ENOMEM;
+	}
+
+	sess->open_time = ktime_get();
+	sess->pid = current->pid;
+	sess->uid = from_kuid_munged(&init_user_ns, current_uid());
+	get_task_comm(sess->comm, current);
+
+	filp->private_data = sess;
+
+	kcf_audit_open(sess);
 	return 0;
 }
 
 static int kcf_release(struct inode *inode, struct file *file)
 {
-	kfree(file->private_data);
+	struct kcf_session *sess = file->private_data;
+
+	kcf_audit_close(sess);
+	kfree(sess->bounce_buf);
+	kfree(sess);
 	return 0;
 }
 
@@ -297,9 +380,9 @@ static int __init kcf_init(void)
 	int nregions;
 	int ret;
 
-	pr_info("initializing (filter_anon=%d filter_cache=%d filter_free=%d filter_slab=%d)\n",
+	pr_info("initializing (filter_anon=%d filter_cache=%d filter_free=%d filter_slab=%d audit=%d)\n",
 		kcf_filter_anon, kcf_filter_cache,
-		kcf_filter_free, kcf_filter_slab);
+		kcf_filter_free, kcf_filter_slab, kcf_audit);
 
 	/* Discover memory regions */
 	ret = kcf_regions_init(&region_list);
