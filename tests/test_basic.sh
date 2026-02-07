@@ -183,37 +183,58 @@ echo "Test 9: Audit logging"
 # Trigger a deliberate open-read-close cycle
 dd if="$PROC_ENTRY" of=/dev/null bs=4096 count=1 2>/dev/null
 sleep 1
-# Audit records go to dmesg when auditd is not running, and to
-# /var/log/audit/audit.log when it is. Check both paths.
-AUDIT_FOUND=0
-DMESG_AUDIT=$(dmesg | tail -n +$((DMESG_START + 1)))
-if echo "$DMESG_AUDIT" | grep -q "kcore_filtered op=open"; then
-    AUDIT_FOUND=1
-fi
-if [[ -r /var/log/audit/audit.log ]]; then
-    if grep -q "kcore_filtered op=open" /var/log/audit/audit.log 2>/dev/null; then
-        AUDIT_FOUND=1
+
+# Helper: search dmesg and audit log for a pattern
+audit_search() {
+    local pattern="$1"
+    DMESG_AUDIT=$(dmesg | tail -n +$((DMESG_START + 1)))
+    if echo "$DMESG_AUDIT" | grep -q "$pattern"; then
+        return 0
     fi
-fi
-if [[ $AUDIT_FOUND -eq 1 ]]; then
+    if [[ -r /var/log/audit/audit.log ]]; then
+        if grep -q "$pattern" /var/log/audit/audit.log 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Check open record exists and contains identity fields
+if audit_search "kcore_filtered op=open"; then
     pass "audit open record found"
+    # Verify new identity fields are present
+    if audit_search "kcore_filtered op=open.*auid="; then
+        pass "audit open record contains auid (login uid)"
+    else
+        skip "auid field not found in open record"
+    fi
+    if audit_search "kcore_filtered op=open.*exe="; then
+        pass "audit open record contains exe path"
+    else
+        skip "exe field not found in open record"
+    fi
 else
     skip "audit records not found (auditd may not be running and klog may not include audit)"
 fi
 
-CLOSE_FOUND=0
-if echo "$DMESG_AUDIT" | grep -q "kcore_filtered op=close"; then
-    CLOSE_FOUND=1
-fi
-if [[ -r /var/log/audit/audit.log ]]; then
-    if grep -q "kcore_filtered op=close" /var/log/audit/audit.log 2>/dev/null; then
-        CLOSE_FOUND=1
-    fi
-fi
-if [[ $CLOSE_FOUND -eq 1 ]]; then
+# Check close record
+if audit_search "kcore_filtered op=close.*bytes_read="; then
     pass "audit close record found (includes bytes_read and duration_ms)"
 else
     skip "audit close record not found (auditd may not be running)"
+fi
+
+# Trigger a denied access attempt (run as non-root user)
+if command -v su &>/dev/null && id -u nobody &>/dev/null; then
+    su -s /bin/sh nobody -c "cat $PROC_ENTRY" 2>/dev/null || true
+    sleep 1
+    if audit_search "kcore_filtered op=denied"; then
+        pass "audit denied record found for unauthorized access"
+    else
+        skip "denied audit record not found (su to nobody may not work in this environment)"
+    fi
+else
+    skip "cannot test denied audit (su or nobody user not available)"
 fi
 
 # Verify audit parameter is visible in sysfs

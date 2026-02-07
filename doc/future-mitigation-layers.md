@@ -79,17 +79,27 @@ subsystem using `AUDIT_KERNEL` (type 2000) records.
 
 ### What is logged
 
-**On open:**
-- `op=open` — event type
-- `pid` — PID of the process that opened the file
-- `uid` — UID of the process
+All records share a common set of identity fields:
+- `pid` — PID of the process
+- `uid` — effective UID of the process
+- `auid` — audit login UID (the original user who logged in, survives
+  `sudo`/`su`)
+- `ses` — audit session ID
 - `comm` — process command name (e.g., `drgn`, `dd`, `cat`)
+- `exe` — full path to the executable (e.g., `/usr/bin/drgn`)
 
-**On close:**
-- `op=close` — event type
-- `pid`, `uid`, `comm` — same identity fields as open
+**On open (`op=open`):**
+- Identity fields above, logged when a process successfully opens
+  `/proc/kcore_filtered`
+
+**On close (`op=close`):**
+- Identity fields above, plus:
 - `bytes_read` — total bytes read during the session
 - `duration_ms` — how long the file was held open (milliseconds)
+
+**On denied access (`op=denied`):**
+- Identity fields (from `current` task, no session), logged when a
+  process without `CAP_SYS_RAWIO` attempts to open the file
 
 ### Configuration
 

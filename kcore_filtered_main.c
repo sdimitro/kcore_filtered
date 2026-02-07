@@ -29,6 +29,8 @@
 #include <linux/cred.h>
 #include <linux/ktime.h>
 #include <linux/sched.h>
+#include <linux/dcache.h>
+#include <linux/fs_struct.h>
 #include <asm/io.h>
 #include <asm/page.h>
 
@@ -55,7 +57,10 @@ struct kcf_session {
 	size_t bytes_read;
 	pid_t pid;
 	uid_t uid;
+	kuid_t loginuid;
+	unsigned int sessionid;
 	char comm[TASK_COMM_LEN];
+	char *exe_path;
 };
 
 /* Virtual address <-> file offset conversion, matching kcore.c */
@@ -246,6 +251,24 @@ out:
 	return orig_buflen - buflen;
 }
 
+/*
+ * Log the common identity fields shared by all audit records.
+ * Caller must hold the audit buffer and call audit_log_end() after.
+ */
+static void kcf_audit_log_identity(struct audit_buffer *ab,
+				   struct kcf_session *sess)
+{
+	audit_log_format(ab, " pid=%d uid=%u auid=%u ses=%u comm=",
+		sess->pid, sess->uid,
+		from_kuid_munged(&init_user_ns, sess->loginuid),
+		sess->sessionid);
+	audit_log_untrustedstring(ab, sess->comm);
+	if (sess->exe_path) {
+		audit_log_format(ab, " exe=");
+		audit_log_untrustedstring(ab, sess->exe_path);
+	}
+}
+
 static void kcf_audit_open(struct kcf_session *sess)
 {
 	struct audit_buffer *ab;
@@ -257,10 +280,8 @@ static void kcf_audit_open(struct kcf_session *sess)
 	if (!ab)
 		return;
 
-	audit_log_format(ab,
-		"kcore_filtered op=open pid=%d uid=%u comm=",
-		sess->pid, sess->uid);
-	audit_log_untrustedstring(ab, sess->comm);
+	audit_log_format(ab, "kcore_filtered op=open");
+	kcf_audit_log_identity(ab, sess);
 	audit_log_end(ab);
 }
 
@@ -278,13 +299,60 @@ static void kcf_audit_close(struct kcf_session *sess)
 	if (!ab)
 		return;
 
-	audit_log_format(ab,
-		"kcore_filtered op=close pid=%d uid=%u comm=",
-		sess->pid, sess->uid);
-	audit_log_untrustedstring(ab, sess->comm);
+	audit_log_format(ab, "kcore_filtered op=close");
+	kcf_audit_log_identity(ab, sess);
 	audit_log_format(ab, " bytes_read=%zu duration_ms=%lld",
 		sess->bytes_read, duration_ms);
 	audit_log_end(ab);
+}
+
+static void kcf_audit_denied(void)
+{
+	struct audit_buffer *ab;
+
+	if (!kcf_audit)
+		return;
+
+	ab = audit_log_start(audit_context(), GFP_KERNEL, AUDIT_KERNEL);
+	if (!ab)
+		return;
+
+	audit_log_format(ab,
+		"kcore_filtered op=denied pid=%d uid=%u auid=%u ses=%u comm=",
+		current->pid,
+		from_kuid_munged(&init_user_ns, current_uid()),
+		from_kuid_munged(&init_user_ns, audit_get_loginuid(current)),
+		audit_get_sessionid(current));
+	audit_log_untrustedstring(ab, current->comm);
+	audit_log_end(ab);
+}
+
+/*
+ * Capture the executable path of the current task.
+ * Returns a kstrdup'd string or NULL on failure.
+ */
+static char *kcf_get_exe_path(void)
+{
+	struct file *exe_file;
+	char *buf, *p, *ret = NULL;
+
+	if (!current->mm)
+		return NULL;
+
+	buf = kmalloc(PATH_MAX, GFP_KERNEL);
+	if (!buf)
+		return NULL;
+
+	exe_file = get_mm_exe_file(current->mm);
+	if (exe_file) {
+		p = d_path(&exe_file->f_path, buf, PATH_MAX);
+		if (!IS_ERR(p))
+			ret = kstrdup(p, GFP_KERNEL);
+		fput(exe_file);
+	}
+
+	kfree(buf);
+	return ret;
 }
 
 static int kcf_open(struct inode *inode, struct file *filp)
@@ -296,8 +364,10 @@ static int kcf_open(struct inode *inode, struct file *filp)
 	 * - Requires CAP_SYS_RAWIO
 	 * - Respects kernel lockdown
 	 */
-	if (!capable(CAP_SYS_RAWIO))
+	if (!capable(CAP_SYS_RAWIO)) {
+		kcf_audit_denied();
 		return -EPERM;
+	}
 
 	sess = kzalloc(sizeof(*sess), GFP_KERNEL);
 	if (!sess)
@@ -312,7 +382,10 @@ static int kcf_open(struct inode *inode, struct file *filp)
 	sess->open_time = ktime_get();
 	sess->pid = current->pid;
 	sess->uid = from_kuid_munged(&init_user_ns, current_uid());
+	sess->loginuid = audit_get_loginuid(current);
+	sess->sessionid = audit_get_sessionid(current);
 	get_task_comm(sess->comm, current);
+	sess->exe_path = kcf_get_exe_path();
 
 	filp->private_data = sess;
 
@@ -325,6 +398,7 @@ static int kcf_release(struct inode *inode, struct file *file)
 	struct kcf_session *sess = file->private_data;
 
 	kcf_audit_close(sess);
+	kfree(sess->exe_path);
 	kfree(sess->bounce_buf);
 	kfree(sess);
 	return 0;
