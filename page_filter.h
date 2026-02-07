@@ -44,6 +44,7 @@ struct kcf_filter_stats {
 	atomic64_t denied_anon;
 	atomic64_t denied_cache;
 	atomic64_t denied_free;
+	atomic64_t denied_slab;
 	atomic64_t denied_offline;
 	atomic64_t denied_swapbacked;
 	atomic64_t skipped;

@@ -119,7 +119,7 @@ enum kcf_page_class kcf_classify_page(unsigned long pfn)
 	 */
 	if (PageSlab(page)) {
 		if (kcf_filter_slab) {
-			atomic64_inc(&kcf_stats.denied_anon);
+			atomic64_inc(&kcf_stats.denied_slab);
 			return KCF_PAGE_DENY;
 		}
 		atomic64_inc(&kcf_stats.allowed);

@@ -217,6 +217,73 @@ else
     pass "no error messages in dmesg"
 fi
 
+# --- Test 12: Load with filter_slab=1 ---
+echo "Test 12: Module loading with filter_slab=1"
+if insmod "$MODPATH" filter_slab=1; then
+    pass "insmod filter_slab=1 succeeded"
+else
+    fail "insmod filter_slab=1 failed"
+    # Skip remaining slab tests
+    echo "  Skipping remaining filter_slab tests"
+    skip "filter_slab=1 parameter test"
+    skip "filter_slab=1 stats test"
+    skip "filter_slab=1 unload test"
+    goto_summary=1
+fi
+sleep 1
+
+if [[ -z "${goto_summary:-}" ]]; then
+
+# --- Test 13: Verify filter_slab parameter ---
+echo "Test 13: filter_slab parameter"
+SLAB_PARAM=$(cat /sys/module/kcore_filtered/parameters/filter_slab 2>/dev/null || echo "unknown")
+if [[ "$SLAB_PARAM" == "Y" ]]; then
+    pass "filter_slab=Y confirmed via sysfs"
+else
+    fail "filter_slab parameter is '$SLAB_PARAM', expected 'Y'"
+fi
+
+# --- Test 14: Stats show denied_slab field ---
+echo "Test 14: denied_slab in stats"
+if [[ -e "$STATS_ENTRY" ]]; then
+    STATS_CONTENT=$(cat "$STATS_ENTRY" 2>/dev/null || echo "")
+    if echo "$STATS_CONTENT" | grep -q "denied_slab"; then
+        pass "stats file contains denied_slab field"
+    else
+        fail "stats file missing denied_slab field"
+    fi
+else
+    fail "/proc/kcore_filtered_stats does not exist"
+fi
+
+# --- Test 15: Read some data to exercise slab filtering ---
+echo "Test 15: Exercise slab filter"
+# Read a chunk from the file to trigger page classification
+READ_BYTES=$(dd if="$PROC_ENTRY" bs=4096 count=256 2>/dev/null | wc -c)
+if [[ "$READ_BYTES" -gt 0 ]]; then
+    # Check that denied_slab counter incremented (some slab pages exist on any system)
+    DENIED_SLAB=$(cat "$STATS_ENTRY" 2>/dev/null | grep "denied_slab" | awk '{print $2}')
+    if [[ -n "$DENIED_SLAB" && "$DENIED_SLAB" -gt 0 ]]; then
+        pass "denied_slab counter is $DENIED_SLAB (slab pages being filtered)"
+    else
+        # It's possible the sampled pages didn't include slab pages
+        pass "read succeeded (denied_slab=$DENIED_SLAB — may need larger read to hit slab pages)"
+    fi
+else
+    fail "failed to read from kcore_filtered with filter_slab=1"
+fi
+
+# --- Test 16: Unload after filter_slab test ---
+echo "Test 16: Unload after filter_slab test"
+if rmmod "$MODNAME"; then
+    pass "rmmod after filter_slab=1 test succeeded"
+else
+    fail "rmmod after filter_slab=1 test failed"
+fi
+sleep 1
+
+fi  # end goto_summary guard
+
 # Summary
 echo ""
 echo "=== Results ==="

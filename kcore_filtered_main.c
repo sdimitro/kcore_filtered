@@ -267,6 +267,8 @@ static int kcf_stats_show(struct seq_file *m, void *v)
 		   atomic64_read(&kcf_stats.denied_cache));
 	seq_printf(m, "denied_free:      %lld\n",
 		   atomic64_read(&kcf_stats.denied_free));
+	seq_printf(m, "denied_slab:      %lld\n",
+		   atomic64_read(&kcf_stats.denied_slab));
 	seq_printf(m, "denied_offline:   %lld\n",
 		   atomic64_read(&kcf_stats.denied_offline));
 	seq_printf(m, "denied_swapbacked:%lld\n",
@@ -345,11 +347,12 @@ static void __exit kcf_exit(void)
 
 	kcf_regions_free(&region_list);
 
-	pr_info("unloaded - final stats: allowed=%lld denied_anon=%lld denied_cache=%lld denied_free=%lld\n",
+	pr_info("unloaded - final stats: allowed=%lld denied_anon=%lld denied_cache=%lld denied_free=%lld denied_slab=%lld\n",
 		atomic64_read(&kcf_stats.allowed),
 		atomic64_read(&kcf_stats.denied_anon),
 		atomic64_read(&kcf_stats.denied_cache),
-		atomic64_read(&kcf_stats.denied_free));
+		atomic64_read(&kcf_stats.denied_free),
+		atomic64_read(&kcf_stats.denied_slab));
 }
 
 module_init(kcf_init);
