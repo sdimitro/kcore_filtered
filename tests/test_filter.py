@@ -12,8 +12,13 @@ Also cross-references with /proc/kpageflags to independently verify
 page classifications.
 
 Must be run as root with the kcore_filtered module loaded.
+
+Usage:
+  python3 test_filter.py                  # default (filter_slab=0)
+  python3 test_filter.py --filter-slab    # validate filter_slab=1 behavior
 """
 
+import argparse
 import os
 import sys
 import struct
@@ -278,7 +283,7 @@ def test_ram_segments(segments_orig, segments_filt, stats):
     print(f"  Compared segments: {compared_segments}")
 
 
-def print_stats(stats):
+def print_stats(stats, filter_slab=False):
     """Print test results and statistics."""
     print("\n=== Filter Verification Results ===\n")
     print(f"  Total pages sampled:  {stats.total_pages}")
@@ -314,6 +319,17 @@ def print_stats(stats):
     if stats.buddy_not_zeroed > 0:
         print(f"  WARNING: {stats.buddy_not_zeroed} buddy pages were NOT zeroed")
         ok = False
+
+    if filter_slab and stats.slab_not_zeroed > 0:
+        print(f"  FAIL: {stats.slab_not_zeroed} slab pages were NOT zeroed "
+              f"(filter_slab=1 is active)")
+        ok = False
+
+    if filter_slab and stats.slab_zeroed == 0 and stats.total_pages > 0:
+        print("  WARNING: no slab pages were sampled — test inconclusive")
+
+    if filter_slab and stats.slab_zeroed > 0:
+        print(f"  OK: {stats.slab_zeroed} slab pages correctly filtered (zeroed)")
 
     if stats.mismatch_pages > 0:
         # A small number of mismatches is expected on a live system due to
@@ -354,11 +370,31 @@ def print_module_stats():
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Filter verification tests for kcore_filtered")
+    parser.add_argument("--filter-slab", action="store_true",
+                        help="Validate filter_slab=1 behavior: assert slab "
+                             "pages are zeroed")
+    args = parser.parse_args()
+
     check_root()
     check_prereqs()
 
-    print("=== kcore_filtered filter verification ===")
+    mode = "filter_slab=1" if args.filter_slab else "default"
+    print(f"=== kcore_filtered filter verification (mode: {mode}) ===")
     print(f"  Page size: {PAGE_SIZE}")
+
+    if args.filter_slab:
+        # Verify the module parameter is actually set
+        param_path = "/sys/module/kcore_filtered/parameters/filter_slab"
+        if os.path.exists(param_path):
+            with open(param_path) as f:
+                val = f.read().strip()
+            if val != "Y":
+                print(f"ERROR: --filter-slab passed but filter_slab={val} in module")
+                print("Load the module with: insmod kcore_filtered.ko filter_slab=1")
+                sys.exit(1)
+            print("  filter_slab=Y confirmed via sysfs")
 
     # Parse ELF segments from both files
     print("\nParsing ELF headers...")
@@ -373,15 +409,23 @@ def main():
 
     stats = Stats()
     test_ram_segments(segments_orig, segments_filt, stats)
-    print_stats(stats)
+    print_stats(stats, filter_slab=args.filter_slab)
     print_module_stats()
 
-    # Exit code - tolerate small race-induced mismatches on live systems
+    # Exit code
+    fail = False
+
+    # Tolerate small race-induced mismatches on live systems
     mismatch_pct = (100.0 * stats.mismatch_pages / stats.total_pages
                     if stats.total_pages > 0 else 0)
     if stats.mismatch_pages > 5 or mismatch_pct > 2.0:
-        sys.exit(1)
-    sys.exit(0)
+        fail = True
+
+    # In filter_slab mode, slab pages must be zeroed
+    if args.filter_slab and stats.slab_not_zeroed > 0:
+        fail = True
+
+    sys.exit(1 if fail else 0)
 
 
 if __name__ == "__main__":

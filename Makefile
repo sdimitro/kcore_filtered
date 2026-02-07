@@ -56,7 +56,7 @@ coccicheck:
 
 # Run the test suite
 test:
-	@echo "=== Running basic tests ==="
+	@echo "=== Running basic tests (includes filter_slab=1) ==="
 	@sudo bash tests/test_basic.sh
 	@echo ""
 	@echo "=== Running filter validation ==="
@@ -64,6 +64,11 @@ test:
 	@echo ""
 	@echo "=== Running drgn integration tests ==="
 	@sudo python3 tests/test_drgn.py
+
+# Run filter_slab=1 validation (module must be loaded with filter_slab=1)
+test-slab:
+	@echo "=== Running filter validation with filter_slab=1 ==="
+	@sudo python3 tests/test_filter.py --filter-slab
 
 # Install the module
 install:
@@ -78,4 +83,4 @@ unload:
 
 reload: unload load
 
-.PHONY: all modules clean checkpatch sparse coccicheck test install load unload reload
+.PHONY: all modules clean checkpatch sparse coccicheck test test-slab install load unload reload
