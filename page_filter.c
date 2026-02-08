@@ -30,6 +30,13 @@
 
 #include "page_filter.h"
 
+/*
+ * kmem_cache_name() is EXPORT_SYMBOL_GPL in mm/slab_common.c but
+ * declared in mm/slab.h (kernel-internal, not available to modules).
+ * Provide our own declaration so the linker can resolve it.
+ */
+const char *kmem_cache_name(struct kmem_cache *s);
+
 /* Module parameters controlling filter behavior */
 bool kcf_filter_anon = true;
 module_param_named(filter_anon, kcf_filter_anon, bool, 0644);
