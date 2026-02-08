@@ -350,6 +350,142 @@ sleep 1
 
 fi  # end goto_summary guard
 
+# =======================================================
+# Rate Limit Tests (Layer 3)
+# Load with restrictive rate limits to test enforcement.
+# Uses max_session_secs=0 and max_global_bytes_per_min=0
+# to disable time-based limits (which would need sleeps).
+# =======================================================
+
+# Ensure module is not loaded
+if lsmod | grep -q "^${MODNAME}"; then
+    rmmod "$MODNAME" 2>/dev/null || true
+    sleep 1
+fi
+
+echo "Test 18: Module loading with rate limits"
+if insmod "$MODPATH" max_session_bytes=8192 max_opens_per_min=3 \
+         max_session_secs=0 max_global_bytes_per_min=0; then
+    pass "insmod with rate limit params succeeded"
+else
+    fail "insmod with rate limit params failed"
+    skip "rate limit sysfs params"
+    skip "rate limit stats fields"
+    skip "session byte budget"
+    skip "open rate limit"
+    skip "rate limit unload"
+    goto_summary_rl=1
+fi
+sleep 1
+
+if [[ -z "${goto_summary_rl:-}" ]]; then
+
+# --- Test 19: Verify rate limit sysfs parameters ---
+echo "Test 19: Rate limit sysfs parameters"
+for param_check in \
+    "max_session_bytes:8192" \
+    "max_opens_per_min:3" \
+    "max_session_secs:0" \
+    "max_global_bytes_per_min:0"; do
+    pname="${param_check%%:*}"
+    pexpect="${param_check##*:}"
+    pval=$(cat "/sys/module/kcore_filtered/parameters/$pname" 2>/dev/null || echo "MISSING")
+    if [[ "$pval" == "$pexpect" ]]; then
+        pass "$pname=$pval"
+    else
+        fail "$pname is '$pval', expected '$pexpect'"
+    fi
+done
+
+# --- Test 20: Rate limit stats fields exist ---
+echo "Test 20: Rate limit stats fields"
+STATS_CONTENT=$(cat "$STATS_ENTRY" 2>/dev/null || echo "")
+for field in rl_denied_opens rl_denied_reads rl_sess_expired rl_sess_budget; do
+    if echo "$STATS_CONTENT" | grep -q "$field"; then
+        pass "stats contains $field"
+    else
+        fail "stats missing $field"
+    fi
+done
+
+# --- Test 21: Session byte budget enforcement ---
+echo "Test 21: Session byte budget"
+if command -v python3 &>/dev/null; then
+    BYTES_READ=$(python3 -c "
+import os
+fd = os.open('/proc/kcore_filtered', os.O_RDONLY)
+total = 0
+for _ in range(10):
+    chunk = os.read(fd, 4096)
+    if not chunk:
+        break
+    total += len(chunk)
+os.close(fd)
+print(total)
+" 2>/dev/null || echo "ERROR")
+    if [[ "$BYTES_READ" == "ERROR" ]]; then
+        fail "could not read /proc/kcore_filtered via python3"
+    elif [[ "$BYTES_READ" -le 8192 ]]; then
+        pass "byte budget enforced: read $BYTES_READ bytes (limit 8192)"
+    else
+        fail "byte budget NOT enforced: read $BYTES_READ bytes (expected <= 8192)"
+    fi
+else
+    skip "python3 not available for byte budget test"
+fi
+
+# --- Test 22: Open rate limit enforcement ---
+echo "Test 22: Open rate limit"
+# Test 21 consumed open #1. Open 2 more (within budget of 3), then
+# verify the 4th open is denied with EBUSY.
+if command -v python3 &>/dev/null; then
+    RATE_RESULT=$(python3 -c "
+import os, errno
+# Opens 2 and 3 (within the max_opens_per_min=3 budget)
+for i in range(2):
+    fd = os.open('/proc/kcore_filtered', os.O_RDONLY)
+    os.close(fd)
+# Open 4 should be denied
+try:
+    fd = os.open('/proc/kcore_filtered', os.O_RDONLY)
+    os.close(fd)
+    print('NOT_DENIED')
+except OSError as e:
+    if e.errno == errno.EBUSY:
+        print('DENIED_EBUSY')
+    else:
+        print('WRONG_ERROR_%d' % e.errno)
+" 2>/dev/null || echo "ERROR")
+    if [[ "$RATE_RESULT" == "DENIED_EBUSY" ]]; then
+        pass "4th open correctly denied with EBUSY"
+    elif [[ "$RATE_RESULT" == "NOT_DENIED" ]]; then
+        fail "4th open was NOT denied (rate limit not enforced)"
+    else
+        fail "unexpected result from open rate test: $RATE_RESULT"
+    fi
+
+    # Verify rl_denied_opens counter incremented
+    DENIED_OPENS=$(awk '/rl_denied_opens/{print $2}' "$STATS_ENTRY" 2>/dev/null || echo "0")
+    if [[ "${DENIED_OPENS:-0}" -gt 0 ]]; then
+        pass "rl_denied_opens counter incremented ($DENIED_OPENS)"
+    else
+        fail "rl_denied_opens counter is 0 after denied open"
+    fi
+else
+    skip "python3 not available for open rate test"
+fi
+
+# --- Test 23: Unload after rate limit test ---
+echo "Test 23: Unload after rate limit test"
+if rmmod "$MODNAME"; then
+    pass "rmmod after rate limit test succeeded"
+else
+    fail "rmmod after rate limit test failed"
+fi
+sleep 1
+
+fi  # end goto_summary_rl guard
+
 # Summary
 echo ""
 echo "=== Results ==="

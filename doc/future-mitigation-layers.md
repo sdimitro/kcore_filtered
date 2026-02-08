@@ -198,8 +198,8 @@ Rate-limit events emit audit records (`op=rate_limited reason=...`)
 and increment counters visible in `/proc/kcore_filtered_stats`:
 - `rl_denied_opens` — opens blocked by open rate limit
 - `rl_denied_reads` — reads blocked by global byte rate limit
-- `rl_sessions_expired` — sessions that hit the time limit
-- `rl_sessions_budget` — sessions that hit the byte budget
+- `rl_sess_expired` — sessions that hit the time limit
+- `rl_sess_budget` — sessions that hit the byte budget
 
 ### Rapid-Restart Attack Analysis
 

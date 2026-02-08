@@ -513,9 +513,9 @@ static int kcf_stats_show(struct seq_file *m, void *v)
 		   atomic64_read(&kcf_rl_denied_opens));
 	seq_printf(m, "rl_denied_reads:  %lld\n",
 		   atomic64_read(&kcf_rl_denied_reads));
-	seq_printf(m, "rl_sessions_expired:%lld\n",
+	seq_printf(m, "rl_sess_expired:  %lld\n",
 		   atomic64_read(&kcf_rl_sessions_expired));
-	seq_printf(m, "rl_sessions_budget:%lld\n",
+	seq_printf(m, "rl_sess_budget:   %lld\n",
 		   atomic64_read(&kcf_rl_sessions_budget));
 	return 0;
 }
