@@ -283,7 +283,7 @@ def test_ram_segments(segments_orig, segments_filt, stats):
     print(f"  Compared segments: {compared_segments}")
 
 
-def print_stats(stats, filter_slab=False):
+def print_stats(stats, filter_slab=False, slab_list=False):
     """Print test results and statistics."""
     print("\n=== Filter Verification Results ===\n")
     print(f"  Total pages sampled:  {stats.total_pages}")
@@ -369,20 +369,57 @@ def print_module_stats():
                 print(f"  {line.rstrip()}")
 
 
+def get_slab_list_mode():
+    """Read the slab list configuration from sysfs."""
+    action_path = "/sys/module/kcore_filtered/parameters/slab_action"
+    list_path = "/sys/module/kcore_filtered/parameters/slab_cache_list"
+
+    action = "allow"
+    cache_list = ""
+
+    if os.path.exists(action_path):
+        with open(action_path) as f:
+            action = f.read().strip()
+
+    if os.path.exists(list_path):
+        with open(list_path) as f:
+            cache_list = f.read().strip()
+
+    return action, cache_list
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Filter verification tests for kcore_filtered")
     parser.add_argument("--filter-slab", action="store_true",
                         help="Validate filter_slab=1 behavior: assert slab "
                              "pages are zeroed")
+    parser.add_argument("--slab-list", action="store_true",
+                        help="Validate slab allow/deny list behavior: check "
+                             "that some slab pages are filtered and some pass")
     args = parser.parse_args()
 
     check_root()
     check_prereqs()
 
-    mode = "filter_slab=1" if args.filter_slab else "default"
+    if args.slab_list:
+        mode = "slab_list"
+    elif args.filter_slab:
+        mode = "filter_slab=1"
+    else:
+        mode = "default"
     print(f"=== kcore_filtered filter verification (mode: {mode}) ===")
     print(f"  Page size: {PAGE_SIZE}")
+
+    if args.slab_list:
+        action, cache_list = get_slab_list_mode()
+        if not cache_list:
+            print("ERROR: --slab-list passed but slab_cache_list is empty")
+            print("Load with: insmod kcore_filtered.ko slab_action=allow "
+                  "slab_cache_list=task_struct,dentry,...")
+            sys.exit(1)
+        print(f"  slab_action={action}")
+        print(f"  slab_cache_list={cache_list}")
 
     if args.filter_slab:
         # Verify the module parameter is actually set
@@ -409,7 +446,8 @@ def main():
 
     stats = Stats()
     test_ram_segments(segments_orig, segments_filt, stats)
-    print_stats(stats, filter_slab=args.filter_slab)
+    print_stats(stats, filter_slab=args.filter_slab,
+                slab_list=args.slab_list)
     print_module_stats()
 
     # Exit code
@@ -424,6 +462,23 @@ def main():
     # In filter_slab mode, slab pages must be zeroed
     if args.filter_slab and stats.slab_not_zeroed > 0:
         fail = True
+
+    # In slab_list mode, we expect a mix: some slab zeroed, some allowed
+    if args.slab_list:
+        total_slab = stats.slab_zeroed + stats.slab_not_zeroed
+        if total_slab > 0:
+            print(f"\n--- Slab list validation ---")
+            print(f"  Slab pages sampled: {total_slab}")
+            print(f"  Slab zeroed:  {stats.slab_zeroed}")
+            print(f"  Slab allowed: {stats.slab_not_zeroed}")
+            if stats.slab_zeroed > 0 and stats.slab_not_zeroed > 0:
+                print("  OK: slab list filtering is differentiating caches")
+            elif stats.slab_zeroed > 0:
+                print("  OK: slab pages being filtered (may need more "
+                      "samples to see allowed caches)")
+            elif stats.slab_not_zeroed > 0:
+                print("  WARN: no slab pages were denied — list may be "
+                      "too permissive or not enough samples")
 
     sys.exit(1 if fail else 0)
 

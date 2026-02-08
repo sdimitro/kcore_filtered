@@ -38,6 +38,12 @@ sudo rmmod kcore_filtered
 
 # Module parameters (adjustable at load time or via sysfs)
 sudo insmod kcore_filtered.ko filter_anon=1 filter_cache=1 filter_free=1 filter_slab=0
+
+# Slab cache allow/deny list (Layer 1)
+sudo insmod kcore_filtered.ko slab_action=allow \
+    slab_cache_list=task_struct,dentry,inode_cache,vm_area_struct
+sudo insmod kcore_filtered.ko slab_action=deny \
+    slab_cache_list=sk_buff_head,skbuff_fclone_cache
 ```
 
 ## Architecture
@@ -87,7 +93,7 @@ region.c/h             — RAM/vmalloc/text/vmemmap region discovery
 | User page cache | `page_mapping()` + `PageLRU()` | DENY (zeroes) |
 | Swap-backed | `PageSwapBacked(page)` | DENY (zeroes) |
 | Offline / hwpoison | `PageOffline()`, `is_page_hwpoison()` | DENY (zeroes) |
-| Slab | `PageSlab(page)` | ALLOW (configurable) |
+| Slab | `PageSlab(page)` | ALLOW (configurable: filter_slab or slab_cache_list) |
 | Kernel text / vmemmap / vmalloc | Region type | ALLOW |
 
 ## Known Limitations
