@@ -44,14 +44,69 @@ static bool kcf_audit = true;
 module_param_named(audit, kcf_audit, bool, 0644);
 MODULE_PARM_DESC(audit, "Emit audit records on open/close (default: Y)");
 
+/* Layer 3: Rate limiting and time-limited access */
+static unsigned long kcf_max_session_bytes = 64UL * 1024 * 1024;
+module_param_named(max_session_bytes, kcf_max_session_bytes, ulong, 0644);
+MODULE_PARM_DESC(max_session_bytes,
+	"Max bytes readable per session, 0=unlimited (default: 64M)");
+
+static unsigned int kcf_max_session_secs = 300;
+module_param_named(max_session_secs, kcf_max_session_secs, uint, 0644);
+MODULE_PARM_DESC(max_session_secs,
+	"Max session duration in seconds, 0=unlimited (default: 300)");
+
+static unsigned int kcf_max_opens_per_min = 10;
+module_param_named(max_opens_per_min, kcf_max_opens_per_min, uint, 0644);
+MODULE_PARM_DESC(max_opens_per_min,
+	"Max opens per minute globally, 0=unlimited (default: 10)");
+
+static unsigned long kcf_max_global_bytes_per_min = 128UL * 1024 * 1024;
+module_param_named(max_global_bytes_per_min, kcf_max_global_bytes_per_min,
+	ulong, 0644);
+MODULE_PARM_DESC(max_global_bytes_per_min,
+	"Max bytes read per minute globally, 0=unlimited (default: 128M)");
+
 /*
- * Per-file session state. Tracks the bounce buffer and read metrics
- * for audit logging on close.
+ * Global rate-limit window. Tracks opens and bytes read across all
+ * sessions within a 60-second tumbling window. This is the cross-session
+ * component of Layer 3 — it prevents an attacker from circumventing
+ * per-session limits by rapidly opening many short-lived sessions.
+ */
+static DEFINE_SPINLOCK(rate_lock);
+static ktime_t rate_window_start;
+static unsigned int rate_window_opens;
+static unsigned long rate_window_bytes;
+
+/* Rate-limit statistics */
+static atomic64_t kcf_rl_denied_opens = ATOMIC64_INIT(0);
+static atomic64_t kcf_rl_denied_reads = ATOMIC64_INIT(0);
+static atomic64_t kcf_rl_sessions_expired = ATOMIC64_INIT(0);
+static atomic64_t kcf_rl_sessions_budget = ATOMIC64_INIT(0);
+
+/* Forward declaration — defined after audit helpers */
+static void kcf_audit_rate_limited(const char *reason);
+
+/* Must be called with rate_lock held */
+static void kcf_rate_check_window(void)
+{
+	s64 elapsed = ktime_ms_delta(ktime_get(), rate_window_start);
+
+	if (elapsed >= 60000) {
+		rate_window_start = ktime_get();
+		rate_window_opens = 0;
+		rate_window_bytes = 0;
+	}
+}
+
+/*
+ * Per-file session state. Tracks the bounce buffer, read metrics
+ * for audit logging on close, and rate-limit state.
  */
 struct kcf_session {
 	char *bounce_buf;
 	ktime_t open_time;
 	size_t bytes_read;
+	bool limit_logged;	/* avoids spamming audit on repeated reads */
 };
 
 /* Virtual address <-> file offset conversion, matching kcore.c */
@@ -83,11 +138,54 @@ static ssize_t kcf_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 	char *bounce_buf = sess->bounce_buf;
 	loff_t *fpos = &iocb->ki_pos;
 	size_t buflen = iov_iter_count(iter);
-	size_t orig_buflen = buflen;
+	size_t orig_buflen;
 	struct kcf_region *m;
 	unsigned long start;
 	size_t tsz;
+	size_t bytes_read;
 	int ret = 0;
+
+	/* Layer 3: session time limit */
+	if (kcf_max_session_secs > 0) {
+		s64 elapsed_ms = ktime_ms_delta(ktime_get(), sess->open_time);
+
+		if (elapsed_ms > (s64)kcf_max_session_secs * 1000) {
+			if (!sess->limit_logged) {
+				sess->limit_logged = true;
+				atomic64_inc(&kcf_rl_sessions_expired);
+				kcf_audit_rate_limited("session_expired");
+			}
+			return 0;
+		}
+	}
+
+	/* Layer 3: session byte budget — clamp read to remaining budget */
+	if (kcf_max_session_bytes > 0) {
+		if (sess->bytes_read >= kcf_max_session_bytes) {
+			if (!sess->limit_logged) {
+				sess->limit_logged = true;
+				atomic64_inc(&kcf_rl_sessions_budget);
+				kcf_audit_rate_limited("budget_exhausted");
+			}
+			return 0;
+		}
+		if (buflen > kcf_max_session_bytes - sess->bytes_read)
+			buflen = kcf_max_session_bytes - sess->bytes_read;
+	}
+
+	/* Layer 3: global byte rate limit */
+	if (kcf_max_global_bytes_per_min > 0) {
+		spin_lock(&rate_lock);
+		kcf_rate_check_window();
+		if (rate_window_bytes >= kcf_max_global_bytes_per_min) {
+			spin_unlock(&rate_lock);
+			atomic64_inc(&kcf_rl_denied_reads);
+			return -EBUSY;
+		}
+		spin_unlock(&rate_lock);
+	}
+
+	orig_buflen = buflen;
 
 	read_lock(&region_lock);
 
@@ -238,8 +336,17 @@ out:
 	read_unlock(&region_lock);
 	if (ret)
 		return ret;
-	sess->bytes_read += orig_buflen - buflen;
-	return orig_buflen - buflen;
+	bytes_read = orig_buflen - buflen;
+	sess->bytes_read += bytes_read;
+
+	/* Update global byte counter for cross-session rate limiting */
+	if (kcf_max_global_bytes_per_min > 0 && bytes_read > 0) {
+		spin_lock(&rate_lock);
+		rate_window_bytes += bytes_read;
+		spin_unlock(&rate_lock);
+	}
+
+	return bytes_read;
 }
 
 /*
@@ -302,6 +409,23 @@ static void kcf_audit_denied(void)
 	audit_log_end(ab);
 }
 
+static void kcf_audit_rate_limited(const char *reason)
+{
+	struct audit_buffer *ab;
+
+	if (!kcf_audit)
+		return;
+
+	ab = audit_log_start(NULL, GFP_ATOMIC, AUDIT_KERNEL);
+	if (!ab)
+		return;
+
+	audit_log_format(ab, "kcore_filtered op=rate_limited reason=%s",
+			 reason);
+	audit_log_task_info(ab);
+	audit_log_end(ab);
+}
+
 static int kcf_open(struct inode *inode, struct file *filp)
 {
 	struct kcf_session *sess;
@@ -314,6 +438,20 @@ static int kcf_open(struct inode *inode, struct file *filp)
 	if (!capable(CAP_SYS_RAWIO)) {
 		kcf_audit_denied();
 		return -EPERM;
+	}
+
+	/* Layer 3: global open rate limit */
+	if (kcf_max_opens_per_min > 0) {
+		spin_lock(&rate_lock);
+		kcf_rate_check_window();
+		if (rate_window_opens >= kcf_max_opens_per_min) {
+			spin_unlock(&rate_lock);
+			atomic64_inc(&kcf_rl_denied_opens);
+			kcf_audit_rate_limited("open_rate");
+			return -EBUSY;
+		}
+		rate_window_opens++;
+		spin_unlock(&rate_lock);
 	}
 
 	sess = kzalloc(sizeof(*sess), GFP_KERNEL);
@@ -371,6 +509,14 @@ static int kcf_stats_show(struct seq_file *m, void *v)
 		   atomic64_read(&kcf_stats.denied_swapbacked));
 	seq_printf(m, "skipped:          %lld\n",
 		   atomic64_read(&kcf_stats.skipped));
+	seq_printf(m, "rl_denied_opens:  %lld\n",
+		   atomic64_read(&kcf_rl_denied_opens));
+	seq_printf(m, "rl_denied_reads:  %lld\n",
+		   atomic64_read(&kcf_rl_denied_reads));
+	seq_printf(m, "rl_sessions_expired:%lld\n",
+		   atomic64_read(&kcf_rl_sessions_expired));
+	seq_printf(m, "rl_sessions_budget:%lld\n",
+		   atomic64_read(&kcf_rl_sessions_budget));
 	return 0;
 }
 
@@ -396,6 +542,12 @@ static int __init kcf_init(void)
 	pr_info("initializing (filter_anon=%d filter_cache=%d filter_free=%d filter_slab=%d audit=%d)\n",
 		kcf_filter_anon, kcf_filter_cache,
 		kcf_filter_free, kcf_filter_slab, kcf_audit);
+	pr_info("rate limits: max_session_bytes=%lu max_session_secs=%u max_opens_per_min=%u max_global_bytes_per_min=%lu\n",
+		kcf_max_session_bytes, kcf_max_session_secs,
+		kcf_max_opens_per_min, kcf_max_global_bytes_per_min);
+
+	/* Initialize global rate-limit window */
+	rate_window_start = ktime_get();
 
 	/* Discover memory regions */
 	ret = kcf_regions_init(&region_list);
