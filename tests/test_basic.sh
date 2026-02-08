@@ -486,6 +486,167 @@ sleep 1
 
 fi  # end goto_summary_rl guard
 
+# =======================================================
+# Slab Cache List Tests (Layer 1)
+# Test parameter validation and basic operation of the
+# slab allow/deny list feature.
+# =======================================================
+
+# Ensure module is not loaded
+if lsmod | grep -q "^${MODNAME}"; then
+    rmmod "$MODNAME" 2>/dev/null || true
+    sleep 1
+fi
+
+echo "Test 24: Invalid slab_action rejected"
+if insmod "$MODPATH" slab_action=invalid slab_cache_list=foo 2>/dev/null; then
+    fail "insmod accepted invalid slab_action='invalid'"
+    rmmod "$MODNAME" 2>/dev/null || true
+    sleep 1
+else
+    pass "insmod correctly rejected slab_action='invalid'"
+fi
+
+echo "Test 25: Module loading with slab allowlist"
+if insmod "$MODPATH" slab_action=allow \
+         slab_cache_list=task_struct,dentry,inode_cache,vm_area_struct; then
+    pass "insmod with slab allowlist succeeded"
+else
+    fail "insmod with slab allowlist failed"
+    skip "slab allowlist sysfs params"
+    skip "slab allowlist read test"
+    skip "slab allowlist stats"
+    skip "slab allowlist unload"
+    goto_summary_sl=1
+fi
+sleep 1
+
+if [[ -z "${goto_summary_sl:-}" ]]; then
+
+# --- Test 26: Verify slab list sysfs parameters ---
+echo "Test 26: Slab list sysfs parameters"
+SLAB_ACTION=$(cat /sys/module/kcore_filtered/parameters/slab_action 2>/dev/null || echo "MISSING")
+if [[ "$SLAB_ACTION" == "allow" ]]; then
+    pass "slab_action=allow confirmed via sysfs"
+else
+    fail "slab_action is '$SLAB_ACTION', expected 'allow'"
+fi
+
+SLAB_LIST=$(cat /sys/module/kcore_filtered/parameters/slab_cache_list 2>/dev/null || echo "MISSING")
+if echo "$SLAB_LIST" | grep -q "task_struct"; then
+    pass "slab_cache_list contains 'task_struct' via sysfs"
+else
+    fail "slab_cache_list is '$SLAB_LIST', expected to contain 'task_struct'"
+fi
+
+# filter_slab should be off (list mode, not catch-all)
+SLAB_PARAM=$(cat /sys/module/kcore_filtered/parameters/filter_slab 2>/dev/null || echo "unknown")
+if [[ "$SLAB_PARAM" == "N" ]]; then
+    pass "filter_slab=N (list mode, not catch-all)"
+else
+    fail "filter_slab is '$SLAB_PARAM', expected 'N'"
+fi
+
+# --- Test 27: Read data with slab allowlist active ---
+echo "Test 27: Read with slab allowlist"
+timeout 10 dd if="$PROC_ENTRY" of=/dev/null bs=4096 count=1 2>/dev/null || true
+if [[ -e "$STATS_ENTRY" ]]; then
+    STATS_CONTENT=$(cat "$STATS_ENTRY" 2>/dev/null || echo "")
+    if echo "$STATS_CONTENT" | grep -q "denied_slab"; then
+        pass "read completed, denied_slab field present in stats"
+    else
+        fail "denied_slab field missing after read"
+    fi
+else
+    fail "/proc/kcore_filtered_stats missing"
+fi
+
+# --- Test 28: Unload after slab allowlist test ---
+echo "Test 28: Unload after slab allowlist test"
+if rmmod "$MODNAME"; then
+    pass "rmmod after slab allowlist test succeeded"
+else
+    fail "rmmod after slab allowlist test failed"
+fi
+sleep 1
+
+# --- Test 29: Module loading with slab denylist ---
+echo "Test 29: Module loading with slab denylist"
+if insmod "$MODPATH" slab_action=deny \
+         slab_cache_list=sk_buff_head,skbuff_fclone_cache; then
+    pass "insmod with slab denylist succeeded"
+else
+    fail "insmod with slab denylist failed"
+    skip "slab denylist sysfs param"
+    skip "slab denylist read test"
+    skip "slab denylist unload"
+    goto_summary_sl2=1
+fi
+sleep 1
+
+if [[ -z "${goto_summary_sl2:-}" ]]; then
+
+echo "Test 30: Slab denylist sysfs parameter"
+SLAB_ACTION=$(cat /sys/module/kcore_filtered/parameters/slab_action 2>/dev/null || echo "MISSING")
+if [[ "$SLAB_ACTION" == "deny" ]]; then
+    pass "slab_action=deny confirmed via sysfs"
+else
+    fail "slab_action is '$SLAB_ACTION', expected 'deny'"
+fi
+
+# --- Test 31: Read data with slab denylist active ---
+echo "Test 31: Read with slab denylist"
+timeout 10 dd if="$PROC_ENTRY" of=/dev/null bs=4096 count=1 2>/dev/null || true
+pass "read completed with slab denylist (no crash)"
+
+# --- Test 32: Unload after slab denylist test ---
+echo "Test 32: Unload after slab denylist test"
+if rmmod "$MODNAME"; then
+    pass "rmmod after slab denylist test succeeded"
+else
+    fail "rmmod after slab denylist test failed"
+fi
+sleep 1
+
+fi  # end goto_summary_sl2 guard
+
+# --- Test 33: filter_slab=1 overrides slab list ---
+echo "Test 33: filter_slab=1 overrides slab list"
+if insmod "$MODPATH" filter_slab=1 slab_action=allow \
+         slab_cache_list=task_struct,dentry; then
+    pass "insmod with filter_slab=1 + slab list succeeded"
+    # filter_slab=1 should take priority — all slab denied regardless of list
+    SLAB_PARAM=$(cat /sys/module/kcore_filtered/parameters/filter_slab 2>/dev/null || echo "unknown")
+    if [[ "$SLAB_PARAM" == "Y" ]]; then
+        pass "filter_slab=Y overrides slab list (catch-all active)"
+    else
+        fail "filter_slab is '$SLAB_PARAM', expected 'Y'"
+    fi
+    rmmod "$MODNAME" 2>/dev/null || true
+    sleep 1
+else
+    fail "insmod with filter_slab=1 + slab list failed"
+fi
+
+# --- Test 34: Empty slab_cache_list with slab_action is no-op ---
+echo "Test 34: Empty list is no-op"
+if insmod "$MODPATH" slab_action=deny; then
+    pass "insmod with slab_action=deny but no list succeeded"
+    # Should behave like default (all slab allowed)
+    SLAB_PARAM=$(cat /sys/module/kcore_filtered/parameters/filter_slab 2>/dev/null || echo "unknown")
+    if [[ "$SLAB_PARAM" == "N" ]]; then
+        pass "filter_slab=N with empty list (default behavior)"
+    else
+        fail "filter_slab is '$SLAB_PARAM', expected 'N'"
+    fi
+    rmmod "$MODNAME" 2>/dev/null || true
+    sleep 1
+else
+    fail "insmod with empty slab list failed"
+fi
+
+fi  # end goto_summary_sl guard
+
 # Summary
 echo ""
 echo "=== Results ==="

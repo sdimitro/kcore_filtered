@@ -546,6 +546,11 @@ static int __init kcf_init(void)
 		kcf_max_session_bytes, kcf_max_session_secs,
 		kcf_max_opens_per_min, kcf_max_global_bytes_per_min);
 
+	/* Initialize slab cache allow/deny list (Layer 1) */
+	ret = kcf_slab_list_init();
+	if (ret)
+		return ret;
+
 	/* Initialize global rate-limit window */
 	rate_window_start = ktime_get();
 

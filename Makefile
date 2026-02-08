@@ -70,6 +70,11 @@ test-slab:
 	@echo "=== Running filter validation with filter_slab=1 ==="
 	@sudo python3 tests/test_filter.py --filter-slab
 
+# Run slab list validation (module must be loaded with slab_cache_list)
+test-slab-list:
+	@echo "=== Running filter validation with slab list ==="
+	@sudo python3 tests/test_filter.py --slab-list
+
 # Install the module
 install:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) modules_install
@@ -83,4 +88,4 @@ unload:
 
 reload: unload load
 
-.PHONY: all modules clean checkpatch sparse coccicheck test test-slab install load unload reload
+.PHONY: all modules clean checkpatch sparse coccicheck test test-slab test-slab-list install load unload reload

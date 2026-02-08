@@ -58,4 +58,14 @@ extern bool kcf_filter_cache;
 extern bool kcf_filter_free;
 extern bool kcf_filter_slab;
 
+/**
+ * kcf_slab_list_init - Parse and validate slab cache list parameters
+ *
+ * Parses the slab_action and slab_cache_list module parameters.
+ * Must be called during module init, after module_param processing.
+ *
+ * Returns 0 on success, -EINVAL if slab_action is invalid.
+ */
+int kcf_slab_list_init(void);
+
 #endif /* KCORE_FILTERED_PAGE_FILTER_H */

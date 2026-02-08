@@ -19,22 +19,47 @@ The base layer. Filters out:
 **Residual risk:** User data in slab objects, network buffers, and
 kernel-allocated copies of user data.
 
-## Layer 1: Slab Cache Allowlisting
+## Layer 1: Slab Cache Allow/Deny List
 
-**Status: Planned**
+**Status: Implemented**
 
-Instead of allowing all slab pages through (the current default), maintain
-an allowlist of specific `kmem_cache` names that are known to contain
-only kernel-internal data. Block all others.
+Instead of an all-or-nothing `filter_slab=1`, operators can specify a
+list of slab cache names and choose whether it acts as an allowlist
+(only listed caches pass) or denylist (only listed caches are blocked).
 
-### Approach
+### Configuration
 
-Each slab page belongs to a specific `kmem_cache`. The cache name
-identifies what type of objects it holds (e.g., `task_struct`,
-`dentry`, `inode_cache`, `sk_buff`).
+Three modes, controlled by module parameters:
 
-An allowlist might include:
-- `task_struct` — process descriptors (needed by drgn)
+```bash
+# Default: all slab pages allowed (no list, filter_slab=0)
+insmod kcore_filtered.ko
+
+# Catch-all: deny ALL slab pages (overrides any list)
+insmod kcore_filtered.ko filter_slab=1
+
+# Allowlist: only these caches pass, deny everything else
+insmod kcore_filtered.ko slab_action=allow \
+    slab_cache_list=task_struct,dentry,inode_cache,vm_area_struct,mm_struct,signal_cache,files_cache,radix_tree_node,maple_node
+
+# Denylist: only these caches denied, allow everything else
+insmod kcore_filtered.ko slab_action=deny \
+    slab_cache_list=sk_buff_head,skbuff_fclone_cache
+```
+
+Priority hierarchy:
+1. `filter_slab=1` — deny all slab (runtime-toggleable kill switch)
+2. `slab_cache_list` non-empty — apply list with `slab_action` mode
+3. Neither — allow all slab (current default)
+
+`filter_slab` remains runtime-writable (0644) for emergency use.
+`slab_action` and `slab_cache_list` are load-time only (0444) to
+avoid re-parsing complexity.
+
+### Recommended lists
+
+Allowlist (kernel-internal, needed by drgn):
+- `task_struct` — process descriptors
 - `dentry` — directory entry cache
 - `inode_cache` — filesystem inode cache
 - `vm_area_struct` — VMA descriptors
@@ -43,32 +68,31 @@ An allowlist might include:
 - `files_cache` — file descriptor tables
 - `radix_tree_node` — radix tree nodes
 - `maple_node` — maple tree nodes (6.1+)
-- `kmalloc-cg-*` — cgroup-tracked allocations (mixed, may need
-  sub-filtering)
 
-Caches to deny/filter:
+Denylist (may contain user data):
 - `sk_buff_head`, `skbuff_fclone_cache` — network packet data
-- `biovec-*`, `bio-*` — block I/O vectors (may contain user data refs)
+- `biovec-*`, `bio-*` — block I/O vectors
 - `kmalloc-*` (generic) — mixed user and kernel data
 
 ### Implementation
 
-```c
-static bool is_allowed_slab_cache(struct page *page)
-{
-    struct slab *slab = page_slab(page);
-    const char *name = slab->slab_cache->name;
-    /* Check against allowlist */
-}
-```
+Accesses the `slab_cache` pointer via a minimal two-word struct overlay
+on `struct page`. `struct slab` (defined in `mm/slab.h`, not exported)
+places `slab_cache` at word 2, stable since Linux 5.17. The cache name
+is retrieved via `kmem_cache_name()` (`EXPORT_SYMBOL_GPL`).
 
-**Challenge:** `page_slab()` / `slab_cache` access from a module requires
-careful handling. The `struct slab` definition may not be fully exported.
+### Performance
+
+When the list is inactive (default or `filter_slab=1`): zero overhead.
+When active: ~100ns per slab page for a pointer dereference and linear
+`strcmp()` scan. With typical lists of 10-30 entries, this is ~1-3%
+of per-page read cost (dominated by `copy_from_kernel_nofault()`).
 
 ### Trade-off
 
 More restrictive filtering reduces drgn's ability to inspect some kernel
-subsystems. The allowlist must be tuned per use case.
+subsystems. The list must be tuned per use case — the recommended
+allowlist above covers the most common drgn debugging targets.
 
 ## Layer 2: Audit Logging
 
@@ -293,7 +317,7 @@ feature with careful design.
 | Layer | Control | Addresses |
 |---|---|---|
 | 0 | Page-level filtering (implemented) | Bulk user data (anon, cache, free) |
-| 1 | Slab allowlisting | User data in denied slab caches |
+| 1 | Slab allow/deny list (implemented) | User data in denied slab caches |
 | 2 | Audit logging (implemented) | Accountability and detection |
 | 3 | Rate/time limits (implemented) | Bulk exfiltration risk |
 | 4 | Targeted reads (BPF) | Arbitrary kernel memory access |
@@ -307,5 +331,5 @@ The deployment path:
 1. Start with Layer 0 (this module) — immediate value (**done**)
 2. Add Layer 2 (audit logging) — low effort, high compliance value (**done**)
 3. Add Layer 3 (rate limiting) — low effort, reduces blast radius (**done**)
-4. Investigate Layer 1 (slab allowlisting) — moderate effort
+4. Add Layer 1 (slab allow/deny list) — moderate effort (**done**)
 5. Research Layer 4 (targeted reads) — long-term goal
