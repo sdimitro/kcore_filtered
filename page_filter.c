@@ -30,13 +30,6 @@
 
 #include "page_filter.h"
 
-/*
- * kmem_cache_name() is EXPORT_SYMBOL_GPL in mm/slab_common.c but
- * declared in mm/slab.h (kernel-internal, not available to modules).
- * Provide our own declaration so the linker can resolve it.
- */
-const char *kmem_cache_name(struct kmem_cache *s);
-
 /* Module parameters controlling filter behavior */
 bool kcf_filter_anon = true;
 module_param_named(filter_anon, kcf_filter_anon, bool, 0644);
@@ -59,8 +52,8 @@ MODULE_PARM_DESC(filter_slab, "Filter slab pages (default: N)");
  *
  * When slab_cache_list is non-empty and filter_slab=0, individual slab
  * caches are filtered by name. slab_action controls interpretation:
- *   "allow" — only listed caches pass through (allowlist, deny rest)
- *   "deny"  — only listed caches are denied (denylist, allow rest)
+ *   "allow" - only listed caches pass through (allowlist, deny rest)
+ *   "deny"  - only listed caches are denied (denylist, allow rest)
  *
  * filter_slab=1 overrides the list (deny-all catch-all).
  * Both parameters are load-time only (0444) to avoid re-parsing races.
@@ -92,7 +85,7 @@ static bool slab_list_is_allowlist = true;
  * been stable since struct slab was introduced in Linux 5.17, and the
  * kernel enforces it with BUILD_BUG_ON alignment checks in mm/slab.h.
  *
- * We only read the first two words — same fragility class as the
+ * We only read the first two words -same fragility class as the
  * existing PageSlab() / page_folio() usage in this module.
  */
 struct kcf_slab_view {
@@ -103,6 +96,65 @@ struct kcf_slab_view {
 static inline struct kmem_cache *kcf_page_to_cache(struct page *page)
 {
 	return ((struct kcf_slab_view *)page)->slab_cache;
+}
+
+/*
+ * Offset of the 'name' field within struct kmem_cache, discovered at
+ * module init by kcf_discover_cache_name_offset().
+ *
+ * struct kmem_cache is opaque to modules (only forward-declared in
+ * include/linux/slab.h) and kmem_cache_name() is declared in the
+ * internal mm/slab.h header, so modpost cannot resolve it.
+ *
+ * Instead we create a probe cache with a known name at init time,
+ * scan the struct for a pointer to that name, record the offset,
+ * and destroy the probe.  At runtime we read the name at the
+ * discovered offset -no dependence on internal headers.
+ */
+#define KCF_NAME_PROBE_MAX	512
+
+static unsigned int cache_name_offset;
+
+static int __init kcf_discover_cache_name_offset(void)
+{
+	static const char probe_name[] = "__kcf_slab_probe";
+	struct kmem_cache *probe;
+	unsigned int off;
+
+	probe = kmem_cache_create(probe_name, 32, 0, 0, NULL);
+	if (!probe)
+		return -ENOMEM;
+
+	for (off = 0;
+	     off <= KCF_NAME_PROBE_MAX - sizeof(const char *);
+	     off += sizeof(const char *)) {
+		const char *candidate;
+		char buf[sizeof(probe_name)];
+
+		candidate = *(const char **)((char *)probe + off);
+
+		if (!candidate || (unsigned long)candidate < PAGE_OFFSET)
+			continue;
+
+		if (copy_from_kernel_nofault(buf, candidate,
+					     sizeof(buf)))
+			continue;
+
+		if (memcmp(buf, probe_name, sizeof(probe_name)) == 0) {
+			cache_name_offset = off;
+			kmem_cache_destroy(probe);
+			pr_debug("slab cache name at offset %u\n", off);
+			return 0;
+		}
+	}
+
+	kmem_cache_destroy(probe);
+	return -ENOENT;
+}
+
+static inline const char *kcf_cache_name(struct kmem_cache *s)
+{
+	return *(const char **)((char *)s + cache_name_offset);
 }
 
 static bool kcf_slab_name_in_list(const char *name)
@@ -132,7 +184,7 @@ static bool kcf_slab_list_allow(struct page *page)
 	if (!cache)
 		return !slab_list_is_allowlist;
 
-	name = kmem_cache_name(cache);
+	name = kcf_cache_name(cache);
 	if (!name)
 		return !slab_list_is_allowlist;
 
@@ -146,6 +198,7 @@ static bool kcf_slab_list_allow(struct page *page)
 int kcf_slab_list_init(void)
 {
 	char *buf, *tok;
+	int ret;
 
 	/* Validate slab_action */
 	if (strcmp(slab_action_str, "allow") == 0) {
@@ -182,6 +235,12 @@ int kcf_slab_list_init(void)
 	}
 
 	if (slab_list_count > 0) {
+		ret = kcf_discover_cache_name_offset();
+		if (ret) {
+			pr_warn("cannot discover cache name offset; slab list disabled\n");
+			slab_list_count = 0;
+			return 0;
+		}
 		slab_list_active = true;
 		pr_info("slab %s active with %d cache(s)\n",
 			slab_list_is_allowlist ? "allowlist" : "denylist",

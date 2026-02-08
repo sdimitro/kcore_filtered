@@ -78,8 +78,15 @@ Denylist (may contain user data):
 
 Accesses the `slab_cache` pointer via a minimal two-word struct overlay
 on `struct page`. `struct slab` (defined in `mm/slab.h`, not exported)
-places `slab_cache` at word 2, stable since Linux 5.17. The cache name
-is retrieved via `kmem_cache_name()` (`EXPORT_SYMBOL_GPL`).
+places `slab_cache` at word 2, stable since Linux 5.17.
+
+The cache name is retrieved via a probed offset: at module init, a
+temporary slab cache with a known name is created, the `struct
+kmem_cache` is scanned for a pointer to that name, and the offset is
+recorded. This avoids depending on `kmem_cache_name()` whose
+declaration lives in the internal `mm/slab.h` header (modpost cannot
+resolve it for out-of-tree modules). If the probe fails, the slab
+list feature gracefully disables itself.
 
 ### Performance
 
