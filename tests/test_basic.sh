@@ -327,10 +327,10 @@ fi
 # --- Test 16: Read some data to exercise slab filtering ---
 echo "Test 16: Exercise slab filter"
 # Read a chunk from the file to trigger page classification
-READ_BYTES=$(dd if="$PROC_ENTRY" bs=4096 count=256 2>/dev/null | wc -c)
+READ_BYTES=$(dd if="$PROC_ENTRY" bs=4096 count=256 2>/dev/null | wc -c || true)
 if [[ "$READ_BYTES" -gt 0 ]]; then
     # Check that denied_slab counter incremented (some slab pages exist on any system)
-    DENIED_SLAB=$(cat "$STATS_ENTRY" 2>/dev/null | grep "denied_slab" | awk '{print $2}')
+    DENIED_SLAB=$(cat "$STATS_ENTRY" 2>/dev/null | grep "denied_slab" | awk '{print $2}' || true)
     if [[ -n "$DENIED_SLAB" && "$DENIED_SLAB" -gt 0 ]]; then
         pass "denied_slab counter is $DENIED_SLAB (slab pages being filtered)"
     else
