@@ -79,14 +79,17 @@ subsystem using `AUDIT_KERNEL` (type 2000) records.
 
 ### What is logged
 
-All records share a common set of identity fields:
-- `pid` — PID of the process
-- `uid` — effective UID of the process
+All records include full task identity via `audit_log_task_info()`:
+- `ppid`, `pid` — parent and process PID
 - `auid` — audit login UID (the original user who logged in, survives
   `sudo`/`su`)
+- `uid`, `gid`, `euid`, `suid`, `fsuid`, `egid`, `sgid`, `fsgid` —
+  full credential set
+- `tty` — controlling terminal
 - `ses` — audit session ID
 - `comm` — process command name (e.g., `drgn`, `dd`, `cat`)
 - `exe` — full path to the executable (e.g., `/usr/bin/drgn`)
+- `subj` — LSM security context (if SELinux/AppArmor is active)
 
 **On open (`op=open`):**
 - Identity fields above, logged when a process successfully opens
@@ -98,8 +101,8 @@ All records share a common set of identity fields:
 - `duration_ms` — how long the file was held open (milliseconds)
 
 **On denied access (`op=denied`):**
-- Identity fields (from `current` task, no session), logged when a
-  process without `CAP_SYS_RAWIO` attempts to open the file
+- Identity fields above, logged when a process without `CAP_SYS_RAWIO`
+  attempts to open the file
 
 ### Configuration
 
