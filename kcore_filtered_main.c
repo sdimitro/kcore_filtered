@@ -256,7 +256,7 @@ static void kcf_audit_open(void)
 	if (!kcf_audit)
 		return;
 
-	ab = audit_log_start(audit_context(), GFP_ATOMIC, AUDIT_KERNEL);
+	ab = audit_log_start(NULL, GFP_ATOMIC, AUDIT_KERNEL);
 	if (!ab)
 		return;
 
@@ -275,7 +275,7 @@ static void kcf_audit_close(struct kcf_session *sess)
 
 	duration_ms = ktime_ms_delta(ktime_get(), sess->open_time);
 
-	ab = audit_log_start(audit_context(), GFP_ATOMIC, AUDIT_KERNEL);
+	ab = audit_log_start(NULL, GFP_ATOMIC, AUDIT_KERNEL);
 	if (!ab)
 		return;
 
@@ -293,7 +293,7 @@ static void kcf_audit_denied(void)
 	if (!kcf_audit)
 		return;
 
-	ab = audit_log_start(audit_context(), GFP_ATOMIC, AUDIT_KERNEL);
+	ab = audit_log_start(NULL, GFP_ATOMIC, AUDIT_KERNEL);
 	if (!ab)
 		return;
 

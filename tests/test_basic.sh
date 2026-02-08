@@ -180,8 +180,17 @@ fi
 
 # --- Test 9: Audit logging ---
 echo "Test 9: Audit logging"
-# Trigger a deliberate open-read-close cycle
-dd if="$PROC_ENTRY" of=/dev/null bs=4096 count=1 2>/dev/null
+
+# Verify audit parameter is visible in sysfs (doesn't depend on audit subsystem)
+AUDIT_PARAM=$(cat /sys/module/kcore_filtered/parameters/audit 2>/dev/null || echo "unknown")
+if [[ "$AUDIT_PARAM" == "Y" ]]; then
+    pass "audit=Y confirmed via sysfs"
+else
+    fail "audit parameter is '$AUDIT_PARAM', expected 'Y'"
+fi
+
+# Trigger a deliberate open-read-close cycle (timeout prevents hang if audit blocks)
+timeout 10 dd if="$PROC_ENTRY" of=/dev/null bs=4096 count=1 2>/dev/null || true
 sleep 1
 
 # Helper: search dmesg and audit log for a pattern
@@ -202,7 +211,7 @@ audit_search() {
 # Check open record exists and contains identity fields
 if audit_search "kcore_filtered op=open"; then
     pass "audit open record found"
-    # Verify new identity fields are present
+    # Verify identity fields are present (from audit_log_task_info)
     if audit_search "kcore_filtered op=open.*auid="; then
         pass "audit open record contains auid (login uid)"
     else
@@ -225,8 +234,8 @@ else
 fi
 
 # Trigger a denied access attempt (run as non-root user)
-if command -v su &>/dev/null && id -u nobody &>/dev/null; then
-    su -s /bin/sh nobody -c "cat $PROC_ENTRY" 2>/dev/null || true
+if command -v su &>/dev/null && id -u nobody &>/dev/null 2>&1; then
+    timeout 5 su -s /bin/sh nobody -c "cat $PROC_ENTRY" 2>/dev/null || true
     sleep 1
     if audit_search "kcore_filtered op=denied"; then
         pass "audit denied record found for unauthorized access"
@@ -235,14 +244,6 @@ if command -v su &>/dev/null && id -u nobody &>/dev/null; then
     fi
 else
     skip "cannot test denied audit (su or nobody user not available)"
-fi
-
-# Verify audit parameter is visible in sysfs
-AUDIT_PARAM=$(cat /sys/module/kcore_filtered/parameters/audit 2>/dev/null || echo "unknown")
-if [[ "$AUDIT_PARAM" == "Y" ]]; then
-    pass "audit=Y confirmed via sysfs"
-else
-    fail "audit parameter is '$AUDIT_PARAM', expected 'Y'"
 fi
 
 # --- Test 10: Module unloading ---
