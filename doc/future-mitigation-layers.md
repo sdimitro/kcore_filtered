@@ -137,26 +137,98 @@ access."
 
 ## Layer 3: Rate Limiting and Time-Limited Access
 
-**Status: Planned**
+**Status: Implemented**
 
-Prevent sustained bulk reading of kernel memory:
+Prevent sustained bulk reading of kernel memory through two
+complementary mechanisms: per-session limits and global rate limits.
 
-- **Rate limit:** Cap the read rate (e.g., 100 MB/s) to prevent
-  rapid bulk exfiltration
-- **Time limit:** Auto-close the file descriptor after N seconds
-  or minutes
-- **Read budget:** Limit total bytes readable per session
+### Per-Session Controls
+
+- **Session byte budget** (`max_session_bytes`, default: 64 MB):
+  Caps the total bytes a single open file descriptor can read.
+  Once exhausted, subsequent reads return EOF (0 bytes). The read
+  handler clamps each read request to the remaining budget so the
+  session ends cleanly without an error.
+
+- **Session time limit** (`max_session_secs`, default: 300s):
+  Caps how long a file descriptor remains readable. After the
+  deadline, reads return EOF. A normal drgn session typically
+  finishes in seconds to a few minutes.
+
+### Global Rate Controls (Cross-Session)
+
+Per-session limits alone are insufficient against an attacker who
+opens many short-lived sessions. For example, 100 drgn instances
+each reading 5 MB would extract 500 MB without exceeding any
+per-session budget. The global controls address this:
+
+- **Open rate limit** (`max_opens_per_min`, default: 10):
+  Limits how many times `/proc/kcore_filtered` can be successfully
+  opened per 60-second window across all processes. Additional opens
+  return `-EBUSY`. This directly throttles the "start many instances"
+  pattern.
+
+- **Global byte rate** (`max_global_bytes_per_min`, default: 128 MB):
+  Caps the aggregate bytes read by all sessions within a 60-second
+  window. When the budget is hit, active sessions receive `-EBUSY`
+  on their next read. This limits total data extraction regardless
+  of how it is spread across sessions.
+
+Both global controls use a 60-second tumbling window protected by a
+spinlock. The window resets (counters zeroed) once 60 seconds have
+elapsed since the window start.
 
 ### Implementation
 
-Track bytes read and elapsed time in `struct file->private_data`.
-Enforce limits in the `read_iter` handler.
+Per-session state (`bytes_read`, `open_time`) was already tracked in
+`struct kcf_session` for audit logging. Layer 3 adds enforcement
+checks at the top of `kcf_read_iter()` before any data is copied.
+
+Global state uses module-level atomics and a spinlock-protected
+tumbling window. The open rate check is in `kcf_open()`; the global
+byte check is in `kcf_read_iter()`.
+
+All four parameters are runtime-tunable via sysfs:
+```bash
+echo 0 > /sys/module/kcore_filtered/parameters/max_session_bytes  # disable
+echo 33554432 > /sys/module/kcore_filtered/parameters/max_session_bytes  # 32M
+```
+
+Rate-limit events emit audit records (`op=rate_limited reason=...`)
+and increment counters visible in `/proc/kcore_filtered_stats`:
+- `rl_denied_opens` — opens blocked by open rate limit
+- `rl_denied_reads` — reads blocked by global byte rate limit
+- `rl_sessions_expired` — sessions that hit the time limit
+- `rl_sessions_budget` — sessions that hit the byte budget
+
+### Rapid-Restart Attack Analysis
+
+**Attack:** An adversary with `CAP_SYS_RAWIO` spawns many drgn
+processes in rapid succession, each reading a few MB before exiting.
+Per-session limits are never triggered because each session stays
+within budget.
+
+**Mitigation:** The global open rate (`max_opens_per_min=10`) limits
+throughput to 10 sessions/minute. Even if each reads the full 64 MB
+budget, the global byte rate (`max_global_bytes_per_min=128M`) caps
+aggregate extraction to 128 MB/minute. In practice the two limits
+interact: 10 sessions x 64 MB = 640 MB theoretical, but the 128 MB
+global byte cap triggers first, blocking further reads even within
+active sessions. The attacker cannot extract more than 128 MB per
+minute regardless of how many processes they use.
+
+**Detection:** Every rate-limit event generates an audit record.
+A spike in `rl_denied_opens` or `rl_denied_reads` counters is a
+strong signal of attempted abuse. Monitoring systems can alert on
+these counters or on the `op=rate_limited` audit messages.
 
 ### Value
 
-Even with perfect filtering, limiting the total data exposure window
-reduces risk. A drgn session typically needs to read a few MB of
-specific kernel structures, not scan all of RAM.
+Even with perfect page-level filtering, limiting total data exposure
+reduces blast radius. A drgn session typically needs to read a few
+MB of specific kernel structures, not scan all of RAM. The defaults
+(64 MB/session, 128 MB/minute global) are generous enough for
+legitimate drgn debugging while making bulk exfiltration impractical.
 
 ## Layer 4: Targeted Read Mode (BPF-Based)
 
@@ -223,7 +295,7 @@ feature with careful design.
 | 0 | Page-level filtering (implemented) | Bulk user data (anon, cache, free) |
 | 1 | Slab allowlisting | User data in denied slab caches |
 | 2 | Audit logging (implemented) | Accountability and detection |
-| 3 | Rate/time limits | Bulk exfiltration risk |
+| 3 | Rate/time limits (implemented) | Bulk exfiltration risk |
 | 4 | Targeted reads (BPF) | Arbitrary kernel memory access |
 | 5 | Object-level taint | User data in allowed slab objects |
 
@@ -234,6 +306,6 @@ kernel patches.
 The deployment path:
 1. Start with Layer 0 (this module) — immediate value (**done**)
 2. Add Layer 2 (audit logging) — low effort, high compliance value (**done**)
-3. Add Layer 3 (rate limiting) — low effort, reduces blast radius
+3. Add Layer 3 (rate limiting) — low effort, reduces blast radius (**done**)
 4. Investigate Layer 1 (slab allowlisting) — moderate effort
 5. Research Layer 4 (targeted reads) — long-term goal
