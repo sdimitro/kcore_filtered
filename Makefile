@@ -9,6 +9,7 @@
 #   make sparse                - build with sparse static analysis
 #   make test                  - run the test suite (requires root + loaded module)
 #   make clean                 - clean build artifacts
+#   make install               - install module and man page
 #
 
 MODULE_NAME := kcore_filtered
@@ -75,9 +76,19 @@ test-slab-list:
 	@echo "=== Running filter validation with slab list ==="
 	@sudo python3 tests/test_filter.py --slab-list
 
-# Install the module
+# Man page
+MANPAGE := kcore_filtered.4
+MANDIR ?= /usr/share/man
+
+# Install the module and man page
 install:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) modules_install
+	install -d $(DESTDIR)$(MANDIR)/man4
+	install -m 644 $(MANPAGE) $(DESTDIR)$(MANDIR)/man4/$(MANPAGE)
+
+# Uninstall man page (module removed via modprobe -r or depmod)
+uninstall:
+	rm -f $(DESTDIR)$(MANDIR)/man4/$(MANPAGE)
 
 # Convenience: load and unload
 load:
@@ -88,4 +99,4 @@ unload:
 
 reload: unload load
 
-.PHONY: all modules clean checkpatch sparse coccicheck test test-slab test-slab-list install load unload reload
+.PHONY: all modules clean checkpatch sparse coccicheck test test-slab test-slab-list install uninstall load unload reload
