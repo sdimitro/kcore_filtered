@@ -27,6 +27,7 @@
 #include <linux/vmalloc.h>
 #include <linux/audit.h>
 #include <linux/ktime.h>
+#include <linux/memory.h>
 #include <linux/sched.h>
 #include <asm/io.h>
 #include <asm/page.h>
@@ -123,6 +124,75 @@ static LIST_HEAD(region_list);
 static DEFINE_RWLOCK(region_lock);
 static struct kcf_elf_layout elf_layout;
 static size_t elf_file_size;
+
+/*
+ * Memory hotplug support.
+ *
+ * The region list is built at module init and becomes stale if RAM is
+ * hotplugged after loading. We mirror the upstream /proc/kcore pattern:
+ * register a memory hotplug notifier that sets a dirty flag, then
+ * lazily rebuild the region list on the next open().
+ *
+ * The atomic_xchg() under write_lock prevents a double-rebuild race
+ * when two CPUs open simultaneously and both see the flag set.
+ */
+static atomic_t kcf_need_update = ATOMIC_INIT(0);
+
+static int kcf_memory_callback(struct notifier_block *self,
+				unsigned long action, void *arg)
+{
+	if (action == MEM_ONLINE || action == MEM_OFFLINE)
+		atomic_set(&kcf_need_update, 1);
+	return NOTIFY_OK;
+}
+
+static struct notifier_block kcf_mem_nb = {
+	.notifier_call = kcf_memory_callback,
+};
+
+/*
+ * Rebuild the region list if the hotplug notifier has flagged a change.
+ * Called from kcf_open() in process context (sleepable).
+ */
+static void kcf_update_regions(void)
+{
+	LIST_HEAD(new_list);
+	LIST_HEAD(old_list);
+	int nregions;
+	int ret;
+
+	if (!atomic_read(&kcf_need_update))
+		return;
+
+	write_lock(&region_lock);
+	if (!atomic_xchg(&kcf_need_update, 0)) {
+		/* Another CPU already rebuilt; nothing to do. */
+		write_unlock(&region_lock);
+		return;
+	}
+
+	ret = kcf_regions_init(&new_list);
+	if (ret) {
+		/* Rebuild failed — re-arm so next open retries. */
+		atomic_set(&kcf_need_update, 1);
+		write_unlock(&region_lock);
+		kcf_regions_free(&new_list);
+		pr_warn("region rebuild failed: %d (will retry)\n", ret);
+		return;
+	}
+
+	list_splice_init(&region_list, &old_list);
+	list_splice(&new_list, &region_list);
+	nregions = kcf_regions_count(&region_list);
+	elf_file_size = kcf_elf_compute_layout(&region_list, nregions,
+					       &elf_layout);
+	proc_set_size(proc_entry, elf_file_size);
+	write_unlock(&region_lock);
+
+	kcf_regions_free(&old_list);
+	pr_info("region list rebuilt: %d regions (size=%zu)\n",
+		nregions, elf_file_size);
+}
 
 /*
  * Read handler for /proc/kcore_filtered.
@@ -454,6 +524,9 @@ static int kcf_open(struct inode *inode, struct file *filp)
 		spin_unlock(&rate_lock);
 	}
 
+	/* Rebuild region list if memory was hotplugged since last open */
+	kcf_update_regions();
+
 	sess = kzalloc(sizeof(*sess), GFP_KERNEL);
 	if (!sess)
 		return -ENOMEM;
@@ -582,6 +655,9 @@ static int __init kcf_init(void)
 	stats_entry = proc_create("kcore_filtered_stats", 0400, NULL,
 				  &kcf_stats_proc_ops);
 
+	/* Register for memory hotplug events to keep region list current */
+	register_memory_notifier(&kcf_mem_nb);
+
 	pr_info("ready - /proc/kcore_filtered created (size=%zu)\n",
 		elf_file_size);
 	return 0;
@@ -593,6 +669,8 @@ fail_regions:
 
 static void __exit kcf_exit(void)
 {
+	unregister_memory_notifier(&kcf_mem_nb);
+
 	if (stats_entry)
 		proc_remove(stats_entry);
 	if (proc_entry)
