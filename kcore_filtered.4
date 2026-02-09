@@ -297,19 +297,6 @@ Supported architectures: x86-64, ARM64 (with KIMAGE_VADDR support),
 and others via fallbacks.
 .SH LIMITATIONS
 .TP
-.B Static region list
-The memory region list (RAM ranges, kernel text, vmalloc, vmemmap) is
-built once at module load time.
-On systems with memory hotplug, the list becomes stale after
-hot-add or hot-remove operations.
-Reload the module to refresh:
-.RS
-.PP
-.nf
-sudo rmmod kcore_filtered && sudo insmod kcore_filtered.ko
-.fi
-.RE
-.TP
 .B Sub-page problem
 Page-level filtering cannot detect user data stored within kernel slab
 objects (e.g., data from
