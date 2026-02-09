@@ -1,0 +1,329 @@
+.\" SPDX-License-Identifier: GPL-2.0-only
+.\"
+.\" Man page for kcore_filtered kernel module
+.\"
+.TH KCORE_FILTERED 4 "2025-02-08" "Linux" "Linux Kernel Modules"
+.SH NAME
+kcore_filtered \- privacy-filtered /proc/kcore alternative for safe kernel introspection
+.SH SYNOPSIS
+.B insmod kcore_filtered.ko
+.RI [ parameter = value ]...
+.PP
+.B modprobe kcore_filtered
+.RI [ parameter = value ]...
+.SH DESCRIPTION
+.B kcore_filtered
+is a loadable kernel module that creates
+.IR /proc/kcore_filtered ,
+an ELF core file interface structurally identical to
+.IR /proc/kcore
+but with page-level privacy filtering.
+User process pages (anonymous memory, page cache, free pages) are
+redacted to zeroes while kernel data structures remain readable.
+.PP
+The module is designed for use with
+.BR drgn (1)
+and similar kernel introspection tools on production systems where
+reading arbitrary user memory via
+.I /proc/kcore
+is not acceptable from a privacy or compliance standpoint.
+.PP
+On a typical system, filtering removes 80\-95% of sensitive data
+while keeping all kernel structures accessible to debugging tools.
+.SS Files Created
+.TP
+.I /proc/kcore_filtered
+Main interface.
+A read-only ELF64 core file containing filtered kernel memory.
+Permissions are 0400 (root read-only).
+Opening requires
+.BR CAP_SYS_RAWIO .
+.TP
+.I /proc/kcore_filtered_stats
+Read-only statistics file showing per-category page filter counters
+and rate-limit event counts.
+Permissions are 0400.
+.SH PARAMETERS
+Parameters can be set at module load time and, unless noted otherwise,
+adjusted at runtime via
+.IR /sys/module/kcore_filtered/parameters/ .
+.SS Layer 0: Page-Level Filtering
+These boolean parameters control which page categories are redacted.
+All are runtime-writable (0644).
+.TP
+.BR filter_anon =\fIbool\fR (default: Y)
+Filter anonymous user pages (heap, stack, mmap).
+These are the primary source of user-private data.
+.TP
+.BR filter_cache =\fIbool\fR (default: Y)
+Filter user file-backed page cache.
+These pages contain recently-accessed file contents.
+.TP
+.BR filter_free =\fIbool\fR (default: Y)
+Filter free buddy pages.
+Free pages may contain residual data from prior use.
+.TP
+.BR filter_slab =\fIbool\fR (default: N)
+Filter all slab pages.
+Slab pages contain kernel objects (task_struct, dentry, inode, etc.)
+and are typically needed by drgn.
+Setting this to
+.B Y
+acts as a catch-all kill switch that denies all slab data regardless
+of any slab cache list configuration.
+.SS Layer 1: Slab Cache Allow/Deny List
+Fine-grained per-cache filtering.
+Both parameters are load-time only (0444) to avoid re-parsing races.
+.TP
+.BR slab_action =\fImode\fR (default: allow)
+Controls interpretation of
+.BR slab_cache_list .
+Must be
+.B allow
+or
+.BR deny .
+.RS
+.TP
+.B allow
+Only slab caches named in
+.B slab_cache_list
+pass through; all others are denied.
+.TP
+.B deny
+Only slab caches named in
+.B slab_cache_list
+are denied; all others pass through.
+.RE
+.TP
+.BR slab_cache_list =\fIname\fR[,\fIname\fR]... (default: empty)
+Comma-separated list of slab cache names.
+Maximum 64 entries.
+When empty, no per-cache filtering is applied.
+.PP
+The priority hierarchy is:
+.IP 1. 4
+.B filter_slab=1
+overrides everything (deny all slab).
+.IP 2.
+Non-empty
+.B slab_cache_list
+applies per-cache filtering using
+.BR slab_action .
+.IP 3.
+Neither set: all slab pages are allowed (default).
+.SS Layer 2: Audit Logging
+.TP
+.BR audit =\fIbool\fR (default: Y)
+Emit kernel audit records (type
+.BR AUDIT_KERNEL ,
+2000) on open, close, denied access, and rate-limit events.
+Runtime-writable (0644).
+.PP
+Records include full task identity via
+.BR audit_log_task_info ():
+pid, ppid, auid, uid, gid, euid, suid, fsuid, egid, sgid, fsgid,
+tty, ses, comm, exe, and LSM security context.
+.PP
+Close records additionally include
+.B bytes_read
+and
+.BR duration_ms .
+.SS Layer 3: Rate Limiting
+Per-session and global rate limits to prevent bulk data extraction.
+All are runtime-writable (0644).
+.TP
+.BR max_session_bytes =\fIn\fR (default: 67108864)
+Maximum bytes readable per open file descriptor (session).
+Once exhausted, subsequent reads return EOF.
+Set to 0 to disable.
+Default is 64\ MB.
+.TP
+.BR max_session_secs =\fIn\fR (default: 300)
+Maximum session duration in seconds.
+After expiry, reads return EOF.
+Set to 0 to disable.
+.TP
+.BR max_opens_per_min =\fIn\fR (default: 10)
+Maximum successful opens of
+.I /proc/kcore_filtered
+per 60-second window across all processes.
+Excess opens return
+.BR EBUSY .
+Set to 0 to disable.
+.TP
+.BR max_global_bytes_per_min =\fIn\fR (default: 134217728)
+Maximum aggregate bytes read per 60-second window across all sessions.
+When exceeded, active sessions receive
+.B EBUSY
+on their next read.
+Set to 0 to disable.
+Default is 128\ MB.
+.SH STATISTICS
+The file
+.I /proc/kcore_filtered_stats
+exposes the following counters:
+.TP
+.B allowed
+Pages served with real kernel data.
+.TP
+.B denied_anon
+Anonymous user pages redacted to zeroes.
+.TP
+.B denied_cache
+File-backed page cache pages redacted.
+.TP
+.B denied_free
+Free buddy pages redacted.
+.TP
+.B denied_slab
+Slab pages redacted (by filter_slab=1 or slab cache list).
+.TP
+.B denied_offline
+Offline or hardware-poisoned pages redacted.
+.TP
+.B denied_swapbacked
+Swap-backed pages redacted.
+.TP
+.B skipped
+Pages not valid or not online (returned as zeroes).
+.TP
+.B rl_denied_opens
+Opens blocked by the global open rate limit.
+.TP
+.B rl_denied_reads
+Reads blocked by the global byte rate limit.
+.TP
+.B rl_sess_expired
+Sessions that hit the time limit.
+.TP
+.B rl_sess_budget
+Sessions that hit the byte budget.
+.SH EXAMPLES
+Load with default settings (filters anon, cache, and free pages;
+allows slab):
+.PP
+.RS
+.nf
+sudo insmod kcore_filtered.ko
+.fi
+.RE
+.PP
+Load with all slab pages filtered:
+.PP
+.RS
+.nf
+sudo insmod kcore_filtered.ko filter_slab=1
+.fi
+.RE
+.PP
+Load with a slab allowlist (only listed caches pass through):
+.PP
+.RS
+.nf
+sudo insmod kcore_filtered.ko slab_action=allow \\
+    slab_cache_list=task_struct,dentry,inode_cache,vm_area_struct,mm_struct
+.fi
+.RE
+.PP
+Load with a slab denylist (only listed caches are blocked):
+.PP
+.RS
+.nf
+sudo insmod kcore_filtered.ko slab_action=deny \\
+    slab_cache_list=sk_buff_head,skbuff_fclone_cache
+.fi
+.RE
+.PP
+Load with custom rate limits:
+.PP
+.RS
+.nf
+sudo insmod kcore_filtered.ko max_session_bytes=33554432 \\
+    max_session_secs=120 max_opens_per_min=5
+.fi
+.RE
+.PP
+Use with drgn:
+.PP
+.RS
+.nf
+sudo drgn -c /proc/kcore_filtered
+.fi
+.RE
+.PP
+Toggle filter_slab at runtime:
+.PP
+.RS
+.nf
+echo Y > /sys/module/kcore_filtered/parameters/filter_slab
+echo N > /sys/module/kcore_filtered/parameters/filter_slab
+.fi
+.RE
+.PP
+View statistics:
+.PP
+.RS
+.nf
+sudo cat /proc/kcore_filtered_stats
+.fi
+.RE
+.PP
+Search audit log for access records:
+.PP
+.RS
+.nf
+ausearch -m UNKNOWN[2000] -i | grep kcore_filtered
+dmesg | grep "kcore_filtered op="
+.fi
+.RE
+.SH PERMISSIONS
+.I /proc/kcore_filtered
+requires
+.B CAP_SYS_RAWIO
+to open, the same capability required by
+.IR /proc/kcore .
+Access attempts without this capability are denied with
+.B EPERM
+and generate an audit record (if auditing is enabled).
+.PP
+The module respects kernel lockdown mode.
+.SH COMPATIBILITY
+.B kcore_filtered
+targets Linux 6.8 and newer.
+It uses only exported GPL symbols and builds as an out-of-tree module
+against the running kernel headers.
+.PP
+Supported architectures: x86-64, ARM64 (with KIMAGE_VADDR support),
+and others via fallbacks.
+.SH LIMITATIONS
+.TP
+.B Static region list
+The memory region list (RAM ranges, kernel text, vmalloc, vmemmap) is
+built once at module load time.
+On systems with memory hotplug, the list becomes stale after
+hot-add or hot-remove operations.
+Reload the module to refresh:
+.RS
+.PP
+.nf
+sudo rmmod kcore_filtered && sudo insmod kcore_filtered.ko
+.fi
+.RE
+.TP
+.B Sub-page problem
+Page-level filtering cannot detect user data stored within kernel slab
+objects (e.g., data from
+.BR copy_from_user ()
+stored in kmalloc allocations, network packet payloads in sk_buff
+caches).
+Use the slab cache allow/deny list to mitigate this for known
+high-risk caches.
+.SH SEE ALSO
+.BR drgn (1),
+.BR proc (5),
+.BR insmod (8),
+.BR modprobe (8),
+.BR rmmod (8),
+.BR ausearch (8)
+.SH LICENSE
+GPL-2.0-only
