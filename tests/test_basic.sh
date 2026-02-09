@@ -647,6 +647,86 @@ fi
 
 fi  # end goto_summary_sl guard
 
+# =======================================================
+# Memory Hotplug Region Rebuild Test
+# Offline a memory block, open the proc file (triggers
+# lazy rebuild), then online the block again. Verify the
+# module logged "region list rebuilt" in dmesg.
+# =======================================================
+
+# Ensure module is not loaded
+if lsmod | grep -q "^${MODNAME}"; then
+    rmmod "$MODNAME" 2>/dev/null || true
+    sleep 1
+fi
+
+echo "Test 35: Memory hotplug region rebuild"
+
+# Check if memory hotplug sysfs exists
+MEMBLK_DIR="/sys/devices/system/memory"
+if [[ ! -d "$MEMBLK_DIR" ]]; then
+    skip "no memory hotplug sysfs (CONFIG_MEMORY_HOTPLUG not enabled)"
+else
+    # Find an online memory block we can try to offline.
+    # Skip block 0 — it usually cannot be removed.
+    HOTPLUG_BLK=""
+    for blk in "$MEMBLK_DIR"/memory[1-9]*; do
+        [[ -d "$blk" ]] || continue
+        state=$(cat "$blk/state" 2>/dev/null) || continue
+        [[ "$state" == "online" ]] || continue
+        HOTPLUG_BLK="$blk"
+        break
+    done
+
+    if [[ -z "$HOTPLUG_BLK" ]]; then
+        skip "no online memory block found for hotplug test"
+    else
+        # Load module
+        if ! insmod "$MODPATH"; then
+            fail "insmod for hotplug test failed"
+            skip "hotplug offline test"
+            skip "hotplug rebuild detected"
+            skip "hotplug re-online"
+            skip "hotplug unload"
+        else
+            pass "insmod for hotplug test succeeded"
+
+            # Record dmesg position
+            DMESG_HP=$(dmesg | wc -l)
+
+            # Try to offline the memory block
+            BLKNAME=$(basename "$HOTPLUG_BLK")
+            if echo offline > "$HOTPLUG_BLK/state" 2>/dev/null; then
+                pass "offlined $BLKNAME"
+
+                # Open the proc file to trigger lazy rebuild
+                timeout 10 dd if="$PROC_ENTRY" of=/dev/null bs=4096 count=1 2>/dev/null || true
+                sleep 1
+
+                # Check dmesg for rebuild message
+                DMESG_HP_NEW=$(dmesg | tail -n +$((DMESG_HP + 1)))
+                if echo "$DMESG_HP_NEW" | grep -q "region list rebuilt"; then
+                    pass "region list rebuilt after memory offline"
+                else
+                    fail "no 'region list rebuilt' message after offline"
+                fi
+
+                # Re-online the block
+                if echo online > "$HOTPLUG_BLK/state" 2>/dev/null; then
+                    pass "re-onlined $BLKNAME"
+                else
+                    fail "could not re-online $BLKNAME (manual intervention may be needed)"
+                fi
+            else
+                skip "could not offline $BLKNAME (may be pinned by kernel)"
+            fi
+
+            rmmod "$MODNAME" 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+fi
+
 # Summary
 echo ""
 echo "=== Results ==="
